@@ -4,5 +4,7 @@ qwen-omni-utils
 fastapi
 uvicorn
 python-multipart
+librosa
+soundfile
 
 vllm

@@ -20,7 +20,11 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
+from urllib import request as urlrequest
+from urllib.parse import urlparse
 
+import librosa
+import soundfile as sf
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -47,6 +51,49 @@ class ScorePathRequest(BaseModel):
         default=None,
         description="Scoring mode. Default is compact for faster structured scores.",
     )
+
+
+class ScoreUrlRequest(BaseModel):
+    audio_url: str = Field(..., description="Public HTTP(S) URL to an audio file.")
+    target_text: str = Field(..., min_length=1, description="Expected transcript.")
+    max_new_tokens: Optional[int] = Field(
+        default=None, description="Override decode cap. Default is auto from GPU VRAM."
+    )
+    analysis: bool = Field(
+        default=False,
+        description="If true, ask for analysis text before the final score. Slower.",
+    )
+    mode: Optional[Literal["fast", "compact", "analysis"]] = Field(
+        default=None,
+        description="Scoring mode. Default is compact for faster structured scores.",
+    )
+
+
+def download_audio_to_temp(audio_url: str) -> Path:
+    parsed = urlparse(audio_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("audio_url must start with http:// or https://")
+
+    suffix = Path(parsed.path).suffix or ".bin"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = Path(tmp.name)
+        with urlrequest.urlopen(audio_url, timeout=120) as resp:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+    return tmp_path
+
+
+def convert_audio_to_temp_wav(src_path: Path) -> Path:
+    audio, sample_rate = librosa.load(str(src_path), sr=None, mono=False)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        wav_path = Path(tmp.name)
+    if getattr(audio, "ndim", 1) == 2:
+        audio = audio.T
+    sf.write(str(wav_path), audio, sample_rate, format="WAV", subtype="PCM_16")
+    return wav_path
 
 
 class ModelServer:
@@ -215,6 +262,33 @@ def score_path(payload: ScorePathRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"Audio file not found: {exc}") from exc
     except Exception as exc:  # pragma: no cover - runtime/model exceptions
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/score-url")
+def score_url(payload: ScoreUrlRequest) -> dict:
+    src_path = None
+    wav_path = None
+    try:
+        src_path = download_audio_to_temp(payload.audio_url)
+        wav_path = convert_audio_to_temp_wav(src_path)
+        result = SERVER.score_path(
+            audio_path=str(wav_path),
+            target_text=payload.target_text,
+            max_new_tokens=payload.max_new_tokens,
+            analysis=payload.analysis,
+            mode=payload.mode,
+        )
+        result["audio_url"] = payload.audio_url
+        result["downloaded_audio_format"] = src_path.suffix.lower()
+        result["server_transcoded_to_wav"] = True
+        return result
+    except Exception as exc:  # pragma: no cover - runtime/network/model exceptions
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if src_path is not None and src_path.exists():
+            src_path.unlink(missing_ok=True)
+        if wav_path is not None and wav_path.exists():
+            wav_path.unlink(missing_ok=True)
 
 
 @app.post("/score-upload")
