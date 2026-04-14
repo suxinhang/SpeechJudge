@@ -23,8 +23,6 @@ from typing import Literal, Optional
 from urllib import request as urlrequest
 from urllib.parse import urlparse
 
-import librosa
-import soundfile as sf
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -87,6 +85,14 @@ def download_audio_to_temp(audio_url: str) -> Path:
 
 
 def convert_audio_to_temp_wav(src_path: Path) -> Path:
+    try:
+        import librosa
+        import soundfile as sf
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Missing librosa/soundfile (needed for /score-url). "
+            "Install: pip install librosa soundfile"
+        ) from exc
     audio, sample_rate = librosa.load(str(src_path), sr=None, mono=False)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         wav_path = Path(tmp.name)
