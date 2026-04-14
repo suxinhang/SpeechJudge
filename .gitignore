@@ -2,5 +2,8 @@
 .ipynb_checkpoints
 *.pyc
 
+.env
+!.env.example
+
 pretrained
 dataset/SpeechJudge-Data
