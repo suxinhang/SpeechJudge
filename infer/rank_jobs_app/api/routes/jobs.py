@@ -1,26 +1,26 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from bson import ObjectId
-from bson.errors import InvalidId
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from ...db.json_jobs import JsonJobStore
 from ...services.rank_worker import run_rank_job
 
 
 class CreateJobResponse(BaseModel):
-    job_id: str = Field(..., description="Mongo ObjectId string")
+    job_id: str = Field(..., description="UUID string for the rank job")
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_jobs_router(*, coll, settings) -> APIRouter:
+def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
     router = APIRouter()
 
     @router.post("/jobs/rank", response_model=CreateJobResponse)
@@ -60,12 +60,17 @@ def build_jobs_router(*, coll, settings) -> APIRouter:
             "n_urls": len(urls),
             "n_uploads": len(audio_files or []),
         }
-        res = await coll.insert_one(doc)
-        job_id = str(res.inserted_id)
+        try:
+            job_id = await store.insert_job(doc)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Cannot write job state: {exc}",
+            ) from exc
 
         background_tasks.add_task(
             run_rank_job,
-            coll=coll,
+            store=store,
             job_id=job_id,
             settings=settings,
             target_text=target_text,
@@ -77,14 +82,13 @@ def build_jobs_router(*, coll, settings) -> APIRouter:
     @router.get("/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, Any]:
         try:
-            oid = ObjectId(job_id)
-        except InvalidId as exc:
+            uuid.UUID(job_id)
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid job id") from exc
 
-        doc = await coll.find_one({"_id": oid})
+        doc = await store.get_job(job_id)
         if doc is None:
             raise HTTPException(status_code=404, detail="job not found")
-        doc["job_id"] = str(doc.pop("_id"))
         return doc
 
     return router

@@ -9,11 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bson import ObjectId
-from bson.errors import InvalidId
 from fastapi import UploadFile
-from motor.motor_asyncio import AsyncIOMotorCollection
 
+from ..db.json_jobs import JsonJobStore
 from .audio_io import download_url_to_file, ensure_wav
 from .model_runtime import MODEL
 from .pairwise import pairwise_preference
@@ -27,13 +25,9 @@ def _bubble_sort_total_comparisons(n: int) -> int:
     return n * (n - 1) // 2 if n > 1 else 0
 
 
-async def _update_job(coll: AsyncIOMotorCollection, job_id: str, patch: dict[str, Any]) -> None:
+async def _update_job(store: JsonJobStore, job_id: str, patch: dict[str, Any]) -> None:
     patch = {**patch, "updated_at": _utcnow()}
-    try:
-        oid = ObjectId(job_id)
-    except InvalidId as exc:
-        raise ValueError("invalid job id") from exc
-    await coll.update_one({"_id": oid}, {"$set": patch})
+    await store.update_job(job_id, patch)
 
 
 def _safe_filename(name: str) -> str:
@@ -49,7 +43,7 @@ def _safe_filename(name: str) -> str:
 
 async def prepare_job_inputs(
     *,
-    coll: AsyncIOMotorCollection,
+    store: JsonJobStore,
     job_id: str,
     job_dir: Path,
     target_text: str,
@@ -57,7 +51,7 @@ async def prepare_job_inputs(
     uploads: list[UploadFile] | None,
 ) -> list[dict[str, Any]]:
     await _update_job(
-        coll,
+        store,
         job_id,
         {
             "status": "running",
@@ -119,7 +113,7 @@ async def prepare_job_inputs(
             )
 
     await _update_job(
-        coll,
+        store,
         job_id,
         {
             "target_text": target_text,
@@ -154,7 +148,7 @@ def _bubble_sort_sync(
 
 async def run_rank_job(
     *,
-    coll: AsyncIOMotorCollection,
+    store: JsonJobStore,
     job_id: str,
     settings: Any,
     target_text: str,
@@ -166,7 +160,7 @@ async def run_rank_job(
 
     try:
         items = await prepare_job_inputs(
-            coll=coll,
+            store=store,
             job_id=job_id,
             job_dir=job_dir,
             target_text=target_text,
@@ -177,7 +171,7 @@ async def run_rank_job(
         n = len(items)
         if n == 0:
             await _update_job(
-                coll,
+                store,
                 job_id,
                 {
                     "status": "failed",
@@ -190,7 +184,7 @@ async def run_rank_job(
 
         total_cmp = _bubble_sort_total_comparisons(n)
         await _update_job(
-            coll,
+            store,
             job_id,
             {
                 "phase": "sort",
@@ -225,7 +219,7 @@ async def run_rank_job(
         async def progress_reporter() -> None:
             while True:
                 await asyncio.sleep(0.25)
-                doc = await coll.find_one({"_id": ObjectId(job_id)}, projection={"status": 1})
+                doc = await store.get_job(job_id)
                 if not doc or doc.get("status") not in {"running"}:
                     return
                 now = time.time()
@@ -233,7 +227,7 @@ async def run_rank_job(
                     continue
                 last_report["t"] = now
                 await _update_job(
-                    coll,
+                    store,
                     job_id,
                     {
                         "comparisons_done": done,
@@ -255,7 +249,7 @@ async def run_rank_job(
 
         ranked_ids = [it["id"] for it in ranked]
         await _update_job(
-            coll,
+            store,
             job_id,
             {
                 "status": "succeeded",
@@ -271,7 +265,7 @@ async def run_rank_job(
         )
     except Exception as exc:
         await _update_job(
-            coll,
+            store,
             job_id,
             {
                 "status": "failed",

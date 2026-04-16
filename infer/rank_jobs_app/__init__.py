@@ -5,6 +5,6 @@ Directory layout:
 - ``app/``        FastAPI application factory + lifespan
 - ``api/``        Routers
 - ``core/``       Settings / shared constants
-- ``db/``         Mongo access
+- ``db/``         JSON file job store (no database server)
 - ``services/``   Workers + model runtime helpers
 """

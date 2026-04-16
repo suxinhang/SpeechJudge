@@ -1,6 +1,6 @@
-# Deploy MongoDB for SpeechJudge rank_jobs_app (Motor), Docker Desktop on Windows.
+# Deploy MongoDB via Docker Desktop (optional; rank_jobs_app uses JSON files by default).
 #
-# Default URI: mongodb://127.0.0.1:27017  (see infer/rank_jobs_app/core/config.py)
+# Example URI: mongodb://127.0.0.1:27017
 #
 # Examples:
 #   .\scripts\deploy_mongodb.ps1 -Action Up

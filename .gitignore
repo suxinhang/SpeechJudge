@@ -8,6 +8,9 @@
 pretrained
 dataset/SpeechJudge-Data
 
+# rank_jobs JSON state (local)
+data/rank_jobs/_json_jobs/
+
 # IDE / local tooling
 .idea/
 

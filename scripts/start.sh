@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPLOY_MONGO_SH="${SCRIPT_DIR}/deploy_mongodb.sh"
-
 # ======================
 # 1. conda 环境
 # ======================
@@ -29,62 +26,7 @@ LOG_FILE="$LOG_DIR/server_$(date +%Y%m%d_%H%M%S).log"
 
 echo "[INFO] starting SpeechJudge..." | tee -a "$LOG_FILE"
 
-# ======================
-# 3b. 本地 MongoDB（Docker，可选）
-# ======================
-# 与 infer/rank_jobs_app/core/config.py 默认一致：mongodb://127.0.0.1:27017
-# 显式关闭：SPEECHJUDGE_START_LOCAL_MONGO=0|false|no|off
-# 端口已可连：视为已有 Mongo（本机服务或其它方式），不再起 Docker 容器。
-# 逻辑委托 scripts/deploy_mongodb.sh（容器已存在 / 已运行时会跳过或 docker start）。
-
-_mongo_port="${MONGO_PORT:-27017}"
-_skip_local_mongo() {
-  local v
-  v="$(echo "${SPEECHJUDGE_START_LOCAL_MONGO:-1}" | tr '[:upper:]' '[:lower:]')"
-  [[ "$v" == "0" || "$v" == "false" || "$v" == "no" || "$v" == "off" ]]
-}
-
-_mongo_port_open() {
-  bash -c "echo >/dev/tcp/127.0.0.1/${_mongo_port}" 2>/dev/null
-}
-
-_wait_mongo_port() {
-  local i
-  for i in $(seq 1 30); do
-    if _mongo_port_open; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-if _skip_local_mongo; then
-  echo "[INFO] skip local MongoDB (SPEECHJUDGE_START_LOCAL_MONGO=${SPEECHJUDGE_START_LOCAL_MONGO:-})" | tee -a "$LOG_FILE"
-elif _mongo_port_open; then
-  echo "[INFO] MongoDB port ${_mongo_port} already accepting connections, skip Docker MongoDB." | tee -a "$LOG_FILE"
-elif command -v docker >/dev/null 2>&1 && [[ -f "$DEPLOY_MONGO_SH" ]]; then
-  echo "[INFO] ensuring local MongoDB (Docker)..." | tee -a "$LOG_FILE"
-  set +e
-  bash "$DEPLOY_MONGO_SH" up 2>&1 | tee -a "$LOG_FILE"
-  _mongo_up_rc="${PIPESTATUS[0]}"
-  set -e
-  if [[ "${_mongo_up_rc}" -ne 0 ]]; then
-    echo "[WARN] deploy_mongodb.sh exited ${_mongo_up_rc}; check Docker / port binding." | tee -a "$LOG_FILE"
-  fi
-  if _wait_mongo_port; then
-    echo "[INFO] MongoDB port ${_mongo_port} is ready." | tee -a "$LOG_FILE"
-  else
-    echo "[WARN] MongoDB port ${_mongo_port} not ready after 30s; continuing anyway." | tee -a "$LOG_FILE"
-  fi
-else
-  echo "[WARN] docker not found or missing ${DEPLOY_MONGO_SH}; not starting local MongoDB." | tee -a "$LOG_FILE"
-fi
-
-export SPEECHJUDGE_MONGO_URI="${SPEECHJUDGE_MONGO_URI:-mongodb://127.0.0.1:${_mongo_port}}"
-export SPEECHJUDGE_MONGO_DB="${SPEECHJUDGE_MONGO_DB:-speechjudge}"
-export SPEECHJUDGE_MONGO_COLLECTION="${SPEECHJUDGE_MONGO_COLLECTION:-rank_jobs}"
-echo "[INFO] SPEECHJUDGE_MONGO_URI=${SPEECHJUDGE_MONGO_URI}" | tee -a "$LOG_FILE"
+# rank_jobs_app 使用本地 JSON 文件存任务（见 SPEECHJUDGE_RANK_JOBS_JSON_DIR），无需 Mongo。
 
 # ======================
 # 4. 先停止旧服务（关键）
@@ -104,17 +46,6 @@ pkill -f "rank_jobs_app.app.main:app" || true
 pkill -f "cloudflared tunnel" || true
 
 sleep 2
-
-# ======================
-# 4b. rank_jobs / Motor：bson 随 pymongo 安装（避免未 pip 完整依赖即启动）
-# ======================
-if ! python -c "from bson import ObjectId" 2>/dev/null; then
-  echo "[INFO] pymongo not available (no bson); pip install pymongo motor ..." | tee -a "$LOG_FILE"
-  pip install -q pymongo motor >>"$LOG_FILE" 2>&1 || {
-    echo "[ERROR] pip install pymongo motor failed; install manually then retry." | tee -a "$LOG_FILE"
-    exit 1
-  }
-fi
 
 # ======================
 # 5. 启动服务（后台）

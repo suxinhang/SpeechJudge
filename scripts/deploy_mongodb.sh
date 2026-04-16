@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Deploy MongoDB for SpeechJudge rank_jobs_app (Motor).
+# Deploy MongoDB via Docker (optional; rank_jobs_app uses JSON files by default).
 #
-# Default matches infer/rank_jobs_app/core/config.py:
+# Default URI if you point other tools at Mongo:
 #   SPEECHJUDGE_MONGO_URI=mongodb://127.0.0.1:27017
 #   SPEECHJUDGE_MONGO_DB=speechjudge
 #
