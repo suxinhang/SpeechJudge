@@ -19,7 +19,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from urllib import request as urlrequest
 from urllib.parse import urlparse
 
@@ -100,6 +100,38 @@ def convert_audio_to_temp_wav(src_path: Path) -> Path:
         audio = audio.T
     sf.write(str(wav_path), audio, sample_rate, format="WAV", subtype="PCM_16")
     return wav_path
+
+
+_REASON_MAX_CHARS = 4000
+
+
+def _truncate_reason(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _REASON_MAX_CHARS:
+        return text
+    return text[: _REASON_MAX_CHARS - 1] + "…"
+
+
+def _build_reason(
+    mode: str,
+    details: Any,
+    sub_scores: Any,
+    raw_response: Any,
+) -> str:
+    """Human-readable rationale derived from model outputs (not a second model call)."""
+
+    if mode == "compact" and isinstance(sub_scores, dict) and sub_scores:
+        parts = [
+            f"{key}={value}"
+            for key, value in sorted(sub_scores.items(), key=lambda kv: kv[0])
+        ]
+        return _truncate_reason("; ".join(parts))
+
+    for candidate in (raw_response, details):
+        if isinstance(candidate, str) and candidate.strip():
+            return _truncate_reason(candidate)
+
+    return ""
 
 
 class ModelServer:
@@ -205,6 +237,7 @@ class ModelServer:
             "details": details,
             "sub_scores": sub_scores,
             "raw_response": raw_response,
+            "reason": _build_reason(mode, details, sub_scores, raw_response),
             "audio_path": str(audio_file),
             "target_text": target_text,
             "max_new_tokens": self.effective_response_max_new_tokens(

@@ -1,0 +1,16 @@
+# Copy to e.g. my_cases.yaml and run:
+#   python test/tmp_score_url_batch_test.py --cases my_cases.yaml
+# Requires: pip install pyyaml
+
+version: 1
+suites:
+  - id: fr_book
+    lang: fr
+    dataset: fr_book
+    description: Example — replace urls with French TTS that reads target_fr.txt
+    target:
+      path: fr_book/target_fr.txt
+    rows:
+      - name: sample_voice_1
+        url: https://example.com/your-french-tts.mp3
+        score: 8.0

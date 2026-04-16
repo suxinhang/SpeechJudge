@@ -7,3 +7,22 @@
 
 pretrained
 dataset/SpeechJudge-Data
+
+# IDE / local tooling
+.idea/
+
+# Large or generated assets under infer/examples (keep out of git)
+infer/examples/**/*.mp3
+infer/examples/**/*.wav
+infer/examples/**/*.jsonl
+infer/examples/**/drive_batch/
+infer/examples/**/fr_group_batch/
+infer/examples/combined_score_url_run*.csv
+infer/examples/combined_score_url_summary.md
+infer/examples/en_run.csv
+infer/examples/fr_run.csv
+infer/examples/tr_run.csv
+infer/examples/thai_booksummary/batch_score_url_run*.csv
+infer/examples/thai_booksummary/manifest.csv
+infer/examples/thai_tts_demo/batch_score_url_run.csv
+infer/examples/thai_tts_demo/manifest.csv

@@ -141,6 +141,7 @@ uvicorn api_service:app --host 0.0.0.0 --port 8000
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `score` | number | 总分（通常 1–10，具体以模型解析为准） |
+| `reason` | string | 便于直接展示的“理由/依据”摘要：默认 **`compact`** 由 `sub_scores` 拼接；其它模式优先取 `raw_response`，否则回退到 `details`；过长会截断 |
 | `details` | object \| null | `analysis` 模式：与模型输出相关的明细；`compact` 时与 `sub_scores` 同源语义；`fast` 常为 `null` |
 | `sub_scores` | object \| null | **仅 `compact`**：结构化子分项；其它模式多为 `null` |
 | `raw_response` | string \| null | 模型原始文本片段（依模式不同） |
