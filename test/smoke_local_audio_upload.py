@@ -1,11 +1,14 @@
-"""Smoke test rank_jobs_app by uploading 3 random local audios.
+"""Upload-test rank_jobs_app: by default **all** audios under a directory (full run).
 
 Default data directory:
     D:\\Downloads\\泰语
 
-Example:
-    python test/smoke_local_audio_upload.py \
-      --base-url https://explore-psp-trustees-hanging.trycloudflare.com
+Use ``--sample-size N`` for a quick random subset only.
+
+Example::
+
+    python test/smoke_local_audio_upload.py --base-url https://....trycloudflare.com
+    python test/smoke_local_audio_upload.py --sample-size 3
 """
 
 from __future__ import annotations
@@ -58,10 +61,11 @@ def submit_job(base_url: str, target_text: str, files: list[Path], timeout: int)
     multipart = []
     opened = []
     try:
-        for p in files:
+        for i, p in enumerate(files):
             f = p.open("rb")
             opened.append(f)
-            multipart.append(("audio_files", (p.name, f, "application/octet-stream")))
+            upload_name = f"{i:04d}_{p.name}"
+            multipart.append(("audio_files", (upload_name, f, "application/octet-stream")))
 
         resp = requests.post(
             f"{base_url.rstrip('/')}/jobs/rank",
@@ -103,22 +107,53 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
 
 def main() -> int:
     _configure_stdout_utf8()
-    parser = argparse.ArgumentParser(description="Smoke test upload API with 3 random local audios.")
+    parser = argparse.ArgumentParser(
+        description="Upload rank job: all audios under --data-dir (or --sample-size for a random subset).",
+    )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Service base URL")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Directory to recursively scan")
     parser.add_argument("--target-text", default=DEFAULT_TARGET_TEXT, help="Same transcript for all selected audios")
-    parser.add_argument("--sample-size", type=int, default=3, help="How many files to sample")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
-    parser.add_argument("--submit-timeout", type=int, default=120, help="Timeout seconds for POST /jobs/rank")
-    parser.add_argument("--job-timeout", type=int, default=1800, help="Timeout seconds while polling job result")
-    parser.add_argument("--poll-interval", type=float, default=2.0, help="Polling interval seconds")
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="If set, randomly sample N files; default uploads every audio found",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed when --sample-size is used")
+    parser.add_argument(
+        "--submit-timeout",
+        type=int,
+        default=1800,
+        help="Timeout seconds for POST /jobs/rank (many files need more)",
+    )
+    parser.add_argument(
+        "--job-timeout",
+        type=int,
+        default=28800,
+        help="Timeout seconds while polling (bubble sort ~ n*(n-1)/2 comparisons)",
+    )
+    parser.add_argument("--poll-interval", type=float, default=5.0, help="Polling interval seconds")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
     all_audios = collect_audios(data_dir)
     print(f"[info] found {len(all_audios)} audios under: {data_dir}")
-    chosen = choose_random(all_audios, args.sample_size, args.seed)
-    print("[info] sampled files:")
+    if args.sample_size is None:
+        chosen = sorted(all_audios, key=lambda p: str(p).lower())
+        mode = "full (all files)"
+    else:
+        if args.sample_size < 1:
+            parser.error("--sample-size must be >= 1")
+        chosen = choose_random(all_audios, args.sample_size, args.seed)
+        mode = f"sample n={args.sample_size}"
+    n = len(chosen)
+    est = n * (n - 1) // 2 if n > 1 else 0
+    print(f"[info] mode={mode}, uploading {n} file(s), ~{est} pairwise comparisons on server")
+    if n == 0:
+        print("[error] no audio files matched under --data-dir", file=sys.stderr)
+        return 1
+    print("[info] files:")
     for i, p in enumerate(chosen, start=1):
         print(f"  {i}. {p}")
 
