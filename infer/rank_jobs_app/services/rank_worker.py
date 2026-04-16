@@ -299,7 +299,8 @@ async def run_rank_job(
             ranked = await asyncio.to_thread(runner)
         finally:
             reporter.cancel()
-            with contextlib.suppress(Exception):
+            # CancelledError is BaseException, not Exception — must suppress or background task errors.
+            with contextlib.suppress(asyncio.CancelledError):
                 await reporter
 
         ranked_ids = [it["id"] for it in ranked]
