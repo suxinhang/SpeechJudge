@@ -106,6 +106,17 @@ pkill -f "cloudflared tunnel" || true
 sleep 2
 
 # ======================
+# 4b. rank_jobs / Motor：bson 随 pymongo 安装（避免未 pip 完整依赖即启动）
+# ======================
+if ! python -c "from bson import ObjectId" 2>/dev/null; then
+  echo "[INFO] pymongo not available (no bson); pip install pymongo motor ..." | tee -a "$LOG_FILE"
+  pip install -q pymongo motor >>"$LOG_FILE" 2>&1 || {
+    echo "[ERROR] pip install pymongo motor failed; install manually then retry." | tee -a "$LOG_FILE"
+    exit 1
+  }
+fi
+
+# ======================
 # 5. 启动服务（后台）
 # ======================
 nohup python -m uvicorn rank_jobs_app.app.main:app \
@@ -115,6 +126,7 @@ nohup python -m uvicorn rank_jobs_app.app.main:app \
   >> "$LOG_FILE" 2>&1 &
 
 SERVER_PID=$!
+disown "$SERVER_PID" 2>/dev/null || true
 echo "[INFO] server pid: $SERVER_PID" | tee -a "$LOG_FILE"
 
 # ======================
@@ -138,20 +150,31 @@ echo "[INFO] starting cloudflared..." | tee -a "$LOG_FILE"
 cloudflared tunnel --url http://127.0.0.1:8000 \
   > "$LOG_DIR/cloudflared.log" 2>&1 &
 
-sleep 5
-
 # ======================
-# 8. 提取公网地址
+# 8. 提取公网地址（quick tunnel 日志出现较慢，最多轮询约 2 分钟）
 # ======================
-PUBLIC_URL=$(grep -o 'https://.*trycloudflare.com' "$LOG_DIR/cloudflared.log" | head -n 1 || true)
+PUBLIC_URL=""
+for _cf in $(seq 1 60); do
+  if [[ -f "$LOG_DIR/cloudflared.log" ]]; then
+    PUBLIC_URL=$(
+      grep -oE 'https://[^[:space:]]+trycloudflare\.com' "$LOG_DIR/cloudflared.log" 2>/dev/null | head -n 1 || true
+    )
+  fi
+  if [[ -n "$PUBLIC_URL" ]]; then
+    break
+  fi
+  sleep 2
+done
 
 if [ -n "$PUBLIC_URL" ]; then
     echo "[SUCCESS] Public URL: $PUBLIC_URL" | tee -a "$LOG_FILE"
 else
-    echo "[WARN] cannot detect tunnel URL, check logs" | tee -a "$LOG_FILE"
+    echo "[WARN] cannot detect tunnel URL within ~120s; see: $LOG_DIR/cloudflared.log" | tee -a "$LOG_FILE"
 fi
 
 # ======================
 # 9. 保持进程
 # ======================
+# 在 SSH 前台跑本脚本时，按 Ctrl+C 可能中断 wait 或向进程组发信号，日志里会出现 uvicorn Shutting down。
+# 需要常驻请用: tmux/screen/systemd。
 wait $SERVER_PID

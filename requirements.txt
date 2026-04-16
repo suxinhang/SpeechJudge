@@ -8,5 +8,6 @@ requests>=2.28.0
 librosa
 soundfile
 motor
+pymongo
 
 vllm
