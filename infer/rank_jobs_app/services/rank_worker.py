@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from fastapi import UploadFile
 
@@ -23,6 +23,60 @@ def _utcnow() -> datetime:
 
 def _bubble_sort_total_comparisons(n: int) -> int:
     return n * (n - 1) // 2 if n > 1 else 0
+
+
+def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in paths:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _paths_from_item_dicts(rows: list[dict[str, Any]]) -> list[Path]:
+    paths: list[Path] = []
+    for it in rows:
+        for key in ("original_path", "wav_path"):
+            v = it.get(key)
+            if isinstance(v, str) and v:
+                paths.append(Path(v))
+    return paths
+
+
+def _unlink_audio_files(paths: list[Path]) -> None:
+    for p in paths:
+        try:
+            if p.is_file():
+                p.unlink()
+        except OSError:
+            pass
+
+
+async def _delete_job_audio_files(
+    store: JsonJobStore,
+    job_id: str,
+    items: list[dict[str, Any]] | None,
+) -> None:
+    """Remove downloaded / uploaded / transcoded audio files to save disk space."""
+    paths: list[Path] = []
+    if items is not None:
+        paths = _paths_from_item_dicts(items)
+    else:
+        doc = await store.get_job(job_id)
+        if doc:
+            for p in doc.get("temp_paths") or []:
+                if isinstance(p, str) and p:
+                    paths.append(Path(p))
+            paths.extend(_paths_from_item_dicts(list(doc.get("items") or [])))
+    paths = _dedupe_paths(paths)
+    if paths:
+        await asyncio.to_thread(_unlink_audio_files, paths)
 
 
 async def _update_job(store: JsonJobStore, job_id: str, patch: dict[str, Any]) -> None:
@@ -157,6 +211,7 @@ async def run_rank_job(
 ) -> None:
     job_dir = settings.job_files_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] | None = None
 
     try:
         items = await prepare_job_inputs(
@@ -248,6 +303,15 @@ async def run_rank_job(
                 await reporter
 
         ranked_ids = [it["id"] for it in ranked]
+        ranked_items_public = [
+            {
+                "id": it["id"],
+                "label": it.get("label"),
+                "source": it.get("source"),
+                "url": it.get("url"),
+            }
+            for it in ranked
+        ]
         await _update_job(
             store,
             job_id,
@@ -259,7 +323,9 @@ async def run_rank_job(
                 "comparisons_total": total_cmp,
                 "progress": 1.0,
                 "ranked_ids": ranked_ids,
-                "ranked_items": ranked,
+                "ranked_items": ranked_items_public,
+                "items": [],
+                "temp_paths": [],
                 "finished_at": _utcnow(),
             },
         )
@@ -276,4 +342,6 @@ async def run_rank_job(
             },
         )
     finally:
+        with contextlib.suppress(Exception):
+            await _delete_job_audio_files(store, job_id, items)
         shutil.rmtree(job_dir, ignore_errors=True)
