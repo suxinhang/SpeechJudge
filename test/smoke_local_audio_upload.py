@@ -17,6 +17,7 @@ import argparse
 import json
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Iterable
@@ -57,7 +58,23 @@ def choose_random(paths: Iterable[Path], n: int, seed: int) -> list[Path]:
     return rng.sample(items, n)
 
 
-def submit_job(base_url: str, target_text: str, files: list[Path], timeout: int) -> str:
+def submit_job(
+    base_url: str,
+    target_text: str,
+    files: list[Path],
+    timeout: int,
+    *,
+    upload_heartbeat_sec: float = 30.0,
+) -> str:
+    total_bytes = sum(p.stat().st_size for p in files)
+    mib = total_bytes / (1024 * 1024)
+    print(
+        f"[info] POST /jobs/rank: {len(files)} files, ~{mib:.1f} MiB — "
+        "multipart upload runs inside requests until the full body is sent "
+        f"(heartbeat every {upload_heartbeat_sec:.0f}s while uploading)…",
+        flush=True,
+    )
+
     multipart = []
     opened = []
     try:
@@ -67,15 +84,33 @@ def submit_job(base_url: str, target_text: str, files: list[Path], timeout: int)
             upload_name = f"{i:04d}_{p.name}"
             multipart.append(("audio_files", (upload_name, f, "application/octet-stream")))
 
-        resp = requests.post(
-            f"{base_url.rstrip('/')}/jobs/rank",
-            data={"target_text": target_text},
-            files=multipart,
-            timeout=timeout,
-        )
+        stop_hb = threading.Event()
+
+        def _heartbeat() -> None:
+            tick = 0
+            interval = max(5.0, float(upload_heartbeat_sec))
+            while not stop_hb.wait(interval):
+                tick += 1
+                elapsed = int(tick * interval)
+                print(f"[info] still uploading multipart… ~{elapsed}s elapsed", flush=True)
+
+        hb = threading.Thread(target=_heartbeat, name="upload-heartbeat", daemon=True)
+        hb.start()
+        try:
+            resp = requests.post(
+                f"{base_url.rstrip('/')}/jobs/rank",
+                data={"target_text": target_text},
+                files=multipart,
+                timeout=timeout,
+            )
+        finally:
+            stop_hb.set()
+            hb.join(timeout=2.0)
     finally:
         for f in opened:
             f.close()
+
+    print("[info] upload finished, server responded", flush=True)
 
     if resp.status_code >= 400:
         body = resp.text
@@ -91,6 +126,7 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
     deadline = time.time() + timeout_seconds
     url = f"{base_url.rstrip('/')}/jobs/{job_id}"
     last = {}
+    print(f"[info] polling GET {url} every {interval}s…", flush=True)
     while time.time() < deadline:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
@@ -98,7 +134,7 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
         status = str(last.get("status", ""))
         phase = str(last.get("phase", ""))
         progress = float(last.get("progress", 0.0) or 0.0)
-        print(f"[poll] status={status} phase={phase} progress={progress:.3f}")
+        print(f"[poll] status={status} phase={phase} progress={progress:.3f}", flush=True)
         if status in {"succeeded", "failed"}:
             return last
         time.sleep(interval)
@@ -134,11 +170,17 @@ def main() -> int:
         help="Timeout seconds while polling (bubble sort ~ n*(n-1)/2 comparisons)",
     )
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Polling interval seconds")
+    parser.add_argument(
+        "--upload-heartbeat-sec",
+        type=float,
+        default=30.0,
+        help="Print a line every N seconds while POST body is uploading (no per-chunk API in requests)",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
     all_audios = collect_audios(data_dir)
-    print(f"[info] found {len(all_audios)} audios under: {data_dir}")
+    print(f"[info] found {len(all_audios)} audios under: {data_dir}", flush=True)
     if args.sample_size is None:
         chosen = sorted(all_audios, key=lambda p: str(p).lower())
         mode = "full (all files)"
@@ -149,20 +191,29 @@ def main() -> int:
         mode = f"sample n={args.sample_size}"
     n = len(chosen)
     est = n * (n - 1) // 2 if n > 1 else 0
-    print(f"[info] mode={mode}, uploading {n} file(s), ~{est} pairwise comparisons on server")
+    print(
+        f"[info] mode={mode}, will upload {n} file(s), ~{est} pairwise comparisons on server",
+        flush=True,
+    )
     if n == 0:
         print("[error] no audio files matched under --data-dir", file=sys.stderr)
         return 1
-    print("[info] files:")
+    print("[info] files:", flush=True)
     for i, p in enumerate(chosen, start=1):
-        print(f"  {i}. {p}")
+        print(f"  {i}. {p}", flush=True)
 
-    job_id = submit_job(args.base_url, args.target_text, chosen, args.submit_timeout)
-    print(f"[info] submitted job_id={job_id}")
+    job_id = submit_job(
+        args.base_url,
+        args.target_text,
+        chosen,
+        args.submit_timeout,
+        upload_heartbeat_sec=args.upload_heartbeat_sec,
+    )
+    print(f"[info] submitted job_id={job_id}", flush=True)
     result = poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval)
 
-    print("[result]")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("[result]", flush=True)
+    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     if str(result.get("status")) != "succeeded":
         return 2
     return 0
