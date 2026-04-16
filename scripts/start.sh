@@ -89,6 +89,11 @@ echo "[INFO] SPEECHJUDGE_MONGO_URI=${SPEECHJUDGE_MONGO_URI}" | tee -a "$LOG_FILE
 # ======================
 # 4. 先停止旧服务（关键）
 # ======================
+echo "[INFO] stopping SGLang server if running (free GPU before SpeechJudge)..." | tee -a "$LOG_FILE"
+# 常见启动：python -m sglang.launch_server ...
+pkill -f "sglang.launch_server" || true
+pkill -f "sglang\.router" || true
+
 echo "[INFO] stopping old uvicorn process..." | tee -a "$LOG_FILE"
 
 # 杀 uvicorn / rank_jobs_app
