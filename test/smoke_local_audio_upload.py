@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 import threading
 import time
@@ -60,21 +61,32 @@ def choose_random(paths: Iterable[Path], n: int, seed: int) -> list[Path]:
 
 
 def load_urls_from_file(path: Path) -> list[str]:
+    """Load http(s) URLs from a text file.
+
+    Uses regex over the whole file so it still works if URLs are on **one long line**
+    (no newlines), or if a UTF-8 BOM would break line-based ``startswith`` checks.
+    """
     if not path.is_file():
-        raise FileNotFoundError(f"URL list file not found: {path}")
-    text = path.read_text(encoding="utf-8")
+        raise FileNotFoundError(f"URL list file not found: {path.resolve()}")
+    sz = path.stat().st_size
+    if sz == 0:
+        raise ValueError(
+            f"{path.resolve()} is empty on disk (0 bytes). "
+            "If your editor tab shows URLs, save the file (Ctrl+S) and run again."
+        )
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
     seen: set[str] = set()
     out: list[str] = []
-    for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if not (s.startswith("http://") or s.startswith("https://")):
-            continue
-        if s in seen:
-            continue
-        seen.add(s)
-        out.append(s)
+    for u in re.findall(r"https?://\S+", text, flags=re.IGNORECASE):
+        u = u.strip().rstrip(").,;\"'")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    if not out:
+        preview = text[:300].replace("\r", "").replace("\n", "\\n")
+        raise ValueError(
+            f"No http(s) URLs matched in {path.resolve()} ({sz} bytes). Preview: {preview!r}"
+        )
     return out
 
 
@@ -231,7 +243,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.urls_file is not None:
-        urls = load_urls_from_file(Path(args.urls_file))
+        try:
+            urls = load_urls_from_file(Path(args.urls_file))
+        except (OSError, ValueError) as exc:
+            print(f"[error] {exc}", file=sys.stderr)
+            return 1
         n = len(urls)
         est = n * (n - 1) // 2 if n > 1 else 0
         print(f"[info] mode=urls-file ({args.urls_file}), {n} URLs, ~{est} pairwise comparisons on server", flush=True)
