@@ -29,3 +29,7 @@ infer/examples/thai_booksummary/batch_score_url_run*.csv
 infer/examples/thai_booksummary/manifest.csv
 infer/examples/thai_tts_demo/batch_score_url_run.csv
 infer/examples/thai_tts_demo/manifest.csv
+
+# testd1 batch rank (local paths + results)
+test/testd1_rank_inputs.json
+test/testd1_rank_result.json
