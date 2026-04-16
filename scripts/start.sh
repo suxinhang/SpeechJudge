@@ -147,30 +147,63 @@ done
 # ======================
 echo "[INFO] starting cloudflared..." | tee -a "$LOG_FILE"
 
-cloudflared tunnel --url http://127.0.0.1:8000 \
-  > "$LOG_DIR/cloudflared.log" 2>&1 &
+# 优先使用可写目录中的 cloudflared（例如 /root/bin/cloudflared），
+# 回退到 PATH。也可通过环境变量 CLOUDFLARED_BIN 显式指定。
+if [[ -z "${CLOUDFLARED_BIN:-}" ]]; then
+  if [[ -x "/root/bin/cloudflared" ]]; then
+    CLOUDFLARED_BIN="/root/bin/cloudflared"
+  else
+    CLOUDFLARED_BIN="$(command -v cloudflared || true)"
+  fi
+fi
+START_TUNNEL=1
+if [[ -z "$CLOUDFLARED_BIN" ]]; then
+  echo "[WARN] cloudflared not found in PATH; skip public tunnel." | tee -a "$LOG_FILE"
+  START_TUNNEL=0
+elif [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+  echo "[WARN] cloudflared exists but is not executable: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+  echo "[WARN] fix with: chmod +x \"$CLOUDFLARED_BIN\" (or install as executable), then retry." | tee -a "$LOG_FILE"
+  START_TUNNEL=0
+fi
+
+if [[ "$START_TUNNEL" -eq 1 ]]; then
+  set +e
+  "$CLOUDFLARED_BIN" tunnel --url http://127.0.0.1:8000 \
+    > "$LOG_DIR/cloudflared.log" 2>&1 &
+  CF_PID=$!
+  sleep 2
+  if ! kill -0 "$CF_PID" 2>/dev/null; then
+    echo "[WARN] cloudflared exited immediately; check $LOG_DIR/cloudflared.log" | tee -a "$LOG_FILE"
+    START_TUNNEL=0
+  fi
+  set -e
+fi
 
 # ======================
 # 8. 提取公网地址（quick tunnel 日志出现较慢，最多轮询约 2 分钟）
 # ======================
 PUBLIC_URL=""
-for _cf in $(seq 1 60); do
-  if [[ -f "$LOG_DIR/cloudflared.log" ]]; then
-    PUBLIC_URL=$(
-      grep -oE 'https://[^[:space:]]+trycloudflare\.com' "$LOG_DIR/cloudflared.log" 2>/dev/null | head -n 1 || true
-    )
-  fi
-  if [[ -n "$PUBLIC_URL" ]]; then
-    break
-  fi
-  sleep 2
-done
+if [[ "$START_TUNNEL" -eq 1 ]]; then
+  for _cf in $(seq 1 60); do
+    if [[ -f "$LOG_DIR/cloudflared.log" ]]; then
+      PUBLIC_URL=$(
+        grep -oE 'https://[^[:space:]]+trycloudflare\.com' "$LOG_DIR/cloudflared.log" 2>/dev/null | head -n 1 || true
+      )
+    fi
+    if [[ -n "$PUBLIC_URL" ]]; then
+      break
+    fi
+    sleep 2
+  done
+fi
 
-if [ -n "$PUBLIC_URL" ]; then
+if [[ "$START_TUNNEL" -eq 0 ]]; then
+    echo "[INFO] skip tunnel URL detection because cloudflared is unavailable." | tee -a "$LOG_FILE"
+elif [ -n "$PUBLIC_URL" ]; then
     echo "[SUCCESS] Public URL: $PUBLIC_URL" | tee -a "$LOG_FILE"
 else
     echo "[WARN] cannot detect tunnel URL within ~120s; see: $LOG_DIR/cloudflared.log" | tee -a "$LOG_FILE"
-fi
+  fi
 
 # ======================
 # 9. 保持进程
