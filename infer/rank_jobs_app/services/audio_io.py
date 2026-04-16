@@ -5,6 +5,9 @@ from urllib.parse import urlparse
 
 import requests
 
+# infer/ is on sys.path when rank_jobs_app starts
+from audio_decode import decode_to_wav
+
 
 def download_url_to_file(url: str, dest_dir: Path, stem: str) -> Path:
     parsed = urlparse(url)
@@ -33,26 +36,5 @@ def download_url_to_file(url: str, dest_dir: Path, stem: str) -> Path:
 
 
 def ensure_wav(src_path: Path) -> Path:
-    if src_path.suffix.lower() == ".wav":
-        return src_path
-
-    try:
-        import librosa  # type: ignore[import-not-found]
-        import soundfile as sf  # type: ignore[import-not-found]
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Missing librosa/soundfile (needed to convert non-wav inputs). "
-            "Install: pip install librosa soundfile"
-        ) from exc
-
-    audio, sample_rate = librosa.load(str(src_path), sr=None, mono=False)
-    if getattr(audio, "ndim", 1) == 2:
-        audio = audio.T
-
-    # Named temp next to infer conventions: caller may delete later.
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        wav_path = Path(tmp.name)
-    sf.write(str(wav_path), audio, sample_rate, format="WAV", subtype="PCM_16")
-    return wav_path
+    """Return a path to a WAV suitable for inference (MP4/MOV/… → ffmpeg + librosa fallback)."""
+    return decode_to_wav(src_path)

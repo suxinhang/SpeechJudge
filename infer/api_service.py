@@ -85,21 +85,9 @@ def download_audio_to_temp(audio_url: str) -> Path:
 
 
 def convert_audio_to_temp_wav(src_path: Path) -> Path:
-    try:
-        import librosa
-        import soundfile as sf
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Missing librosa/soundfile (needed for /score-url). "
-            "Install: pip install librosa soundfile"
-        ) from exc
-    audio, sample_rate = librosa.load(str(src_path), sr=None, mono=False)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        wav_path = Path(tmp.name)
-    if getattr(audio, "ndim", 1) == 2:
-        audio = audio.T
-    sf.write(str(wav_path), audio, sample_rate, format="WAV", subtype="PCM_16")
-    return wav_path
+    from audio_decode import decode_to_wav
+
+    return decode_to_wav(src_path)
 
 
 _REASON_MAX_CHARS = 4000
