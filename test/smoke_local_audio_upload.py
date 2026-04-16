@@ -9,6 +9,7 @@ Example::
 
     python test/smoke_local_audio_upload.py --base-url https://....trycloudflare.com
     python test/smoke_local_audio_upload.py --sample-size 3
+    python test/smoke_local_audio_upload.py --urls-file test/date.txt --base-url https://....trycloudflare.com
 """
 
 from __future__ import annotations
@@ -56,6 +57,48 @@ def choose_random(paths: Iterable[Path], n: int, seed: int) -> list[Path]:
         raise ValueError(f"need at least {n} audio files, got {len(items)}")
     rng = random.Random(seed)
     return rng.sample(items, n)
+
+
+def load_urls_from_file(path: Path) -> list[str]:
+    if not path.is_file():
+        raise FileNotFoundError(f"URL list file not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if not (s.startswith("http://") or s.startswith("https://")):
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def submit_job_urls(base_url: str, target_text: str, urls: list[str], timeout: int) -> str:
+    body = json.dumps(urls, ensure_ascii=False)
+    print(
+        f"[info] POST /jobs/rank with urls_json only ({len(urls)} URLs, ~{len(body)} bytes form payload)…",
+        flush=True,
+    )
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/jobs/rank",
+        data={
+            "target_text": target_text,
+            "urls_json": body,
+        },
+        timeout=timeout,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"POST /jobs/rank failed: HTTP {resp.status_code}, body={resp.text[:2000]}")
+    payload = resp.json()
+    job_id = payload.get("job_id")
+    if not job_id:
+        raise RuntimeError(f"missing job_id in response: {json.dumps(payload, ensure_ascii=False)}")
+    return str(job_id)
 
 
 def submit_job(
@@ -144,10 +187,19 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
 def main() -> int:
     _configure_stdout_utf8()
     parser = argparse.ArgumentParser(
-        description="Upload rank job: all audios under --data-dir (or --sample-size for a random subset).",
+        description=(
+            "Rank job smoke test: either read http(s) URLs from --urls-file (small POST, tunnel-friendly), "
+            "or upload local files from --data-dir."
+        ),
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Service base URL")
-    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Directory to recursively scan")
+    parser.add_argument(
+        "--urls-file",
+        type=Path,
+        default=None,
+        help="Text file with one http(s) URL per line; submits urls_json (server downloads). E.g. test/date.txt",
+    )
+    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Directory to recursively scan (ignored if --urls-file)")
     parser.add_argument("--target-text", default=DEFAULT_TARGET_TEXT, help="Same transcript for all selected audios")
     parser.add_argument(
         "--sample-size",
@@ -178,37 +230,51 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    data_dir = Path(args.data_dir)
-    all_audios = collect_audios(data_dir)
-    print(f"[info] found {len(all_audios)} audios under: {data_dir}", flush=True)
-    if args.sample_size is None:
-        chosen = sorted(all_audios, key=lambda p: str(p).lower())
-        mode = "full (all files)"
+    if args.urls_file is not None:
+        urls = load_urls_from_file(Path(args.urls_file))
+        n = len(urls)
+        est = n * (n - 1) // 2 if n > 1 else 0
+        print(f"[info] mode=urls-file ({args.urls_file}), {n} URLs, ~{est} pairwise comparisons on server", flush=True)
+        if n == 0:
+            print("[error] no URLs loaded (need lines starting with http:// or https://)", file=sys.stderr)
+            return 1
+        for i, u in enumerate(urls[:15], start=1):
+            print(f"  {i}. {u}", flush=True)
+        if len(urls) > 15:
+            print(f"  ... ({len(urls) - 15} more)", flush=True)
+        job_id = submit_job_urls(args.base_url, args.target_text, urls, args.submit_timeout)
     else:
-        if args.sample_size < 1:
-            parser.error("--sample-size must be >= 1")
-        chosen = choose_random(all_audios, args.sample_size, args.seed)
-        mode = f"sample n={args.sample_size}"
-    n = len(chosen)
-    est = n * (n - 1) // 2 if n > 1 else 0
-    print(
-        f"[info] mode={mode}, will upload {n} file(s), ~{est} pairwise comparisons on server",
-        flush=True,
-    )
-    if n == 0:
-        print("[error] no audio files matched under --data-dir", file=sys.stderr)
-        return 1
-    print("[info] files:", flush=True)
-    for i, p in enumerate(chosen, start=1):
-        print(f"  {i}. {p}", flush=True)
+        data_dir = Path(args.data_dir)
+        all_audios = collect_audios(data_dir)
+        print(f"[info] found {len(all_audios)} audios under: {data_dir}", flush=True)
+        if args.sample_size is None:
+            chosen = sorted(all_audios, key=lambda p: str(p).lower())
+            mode = "full (all files)"
+        else:
+            if args.sample_size < 1:
+                parser.error("--sample-size must be >= 1")
+            chosen = choose_random(all_audios, args.sample_size, args.seed)
+            mode = f"sample n={args.sample_size}"
+        n = len(chosen)
+        est = n * (n - 1) // 2 if n > 1 else 0
+        print(
+            f"[info] mode={mode}, will upload {n} file(s), ~{est} pairwise comparisons on server",
+            flush=True,
+        )
+        if n == 0:
+            print("[error] no audio files matched under --data-dir", file=sys.stderr)
+            return 1
+        print("[info] files:", flush=True)
+        for i, p in enumerate(chosen, start=1):
+            print(f"  {i}. {p}", flush=True)
 
-    job_id = submit_job(
-        args.base_url,
-        args.target_text,
-        chosen,
-        args.submit_timeout,
-        upload_heartbeat_sec=args.upload_heartbeat_sec,
-    )
+        job_id = submit_job(
+            args.base_url,
+            args.target_text,
+            chosen,
+            args.submit_timeout,
+            upload_heartbeat_sec=args.upload_heartbeat_sec,
+        )
     print(f"[info] submitted job_id={job_id}", flush=True)
     result = poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval)
 
