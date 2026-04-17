@@ -83,6 +83,9 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 )
         prep = max(1, min(prep, 32))
 
+        prep_dl = int(getattr(settings, "prepare_download_attempts", 5))
+        prep_dec = int(getattr(settings, "prepare_decode_attempts", 3))
+
         doc: dict[str, Any] = {
             "status": "queued",
             "phase": "queued",
@@ -95,6 +98,8 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             "n_uploads": len(audio_files or []),
             "pairwise_parallel": pp,
             "prepare_parallel": prep,
+            "prepare_download_attempts": prep_dl,
+            "prepare_decode_attempts": prep_dec,
         }
         try:
             job_id = await store.insert_job(doc)
@@ -114,6 +119,8 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             uploads=audio_files,
             pairwise_parallel=pp,
             prepare_parallel=prep,
+            prepare_download_attempts=prep_dl,
+            prepare_decode_attempts=prep_dec,
         )
         return CreateJobResponse(job_id=job_id)
 

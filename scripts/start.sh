@@ -18,6 +18,8 @@ export SPEECHJUDGE_CUDA_DEVICE="0"
 # Default when POST /jobs/rank omits form fields pairwise_parallel / prepare_parallel.
 # export SPEECHJUDGE_PAIRWISE_PARALLEL=5
 # export SPEECHJUDGE_PREPARE_PARALLEL=8
+# export SPEECHJUDGE_PREPARE_DOWNLOAD_ATTEMPTS=5
+# export SPEECHJUDGE_PREPARE_DECODE_ATTEMPTS=3
 
 # ======================
 # 3. 日志目录

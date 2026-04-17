@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import functools
 import shutil
 import threading
 import time
@@ -107,6 +108,8 @@ async def prepare_job_inputs(
     urls: list[str],
     uploads: list[UploadFile] | None,
     prepare_parallel: int,
+    prepare_download_attempts: int,
+    prepare_decode_attempts: int,
 ) -> list[dict[str, Any]]:
     workers = max(1, min(int(prepare_parallel), 32))
     await _update_job(
@@ -128,10 +131,17 @@ async def prepare_job_inputs(
     async def _prepare_one_url(idx: int, url: str) -> tuple[int, dict[str, Any], list[Path]]:
         async with sem:
             stem = f"url_{idx:04d}"
-            src = await asyncio.to_thread(
-                download_url_to_file, url, job_dir / "download", stem
+            dl = functools.partial(
+                download_url_to_file,
+                url,
+                job_dir / "download",
+                stem,
+                max_attempts=prepare_download_attempts,
             )
-            wav = await asyncio.to_thread(ensure_wav, src)
+            src = await asyncio.to_thread(dl)
+            wav = await asyncio.to_thread(
+                functools.partial(ensure_wav, max_attempts=prepare_decode_attempts), src
+            )
         extras: list[Path] = []
         if wav != src:
             extras.append(wav)
@@ -170,7 +180,10 @@ async def prepare_job_inputs(
                             break
                         f.write(chunk)
                 await up.close()
-                wav = await asyncio.to_thread(ensure_wav, dest)
+                wav = await asyncio.to_thread(
+                    functools.partial(ensure_wav, max_attempts=prepare_decode_attempts),
+                    dest,
+                )
             extras: list[Path] = []
             if wav != dest:
                 extras.append(wav)
@@ -263,6 +276,8 @@ async def run_rank_job(
     uploads: list[UploadFile] | None,
     pairwise_parallel: int,
     prepare_parallel: int,
+    prepare_download_attempts: int,
+    prepare_decode_attempts: int,
 ) -> None:
     job_dir = settings.job_files_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -277,6 +292,8 @@ async def run_rank_job(
             urls=urls,
             uploads=uploads,
             prepare_parallel=prepare_parallel,
+            prepare_download_attempts=prepare_download_attempts,
+            prepare_decode_attempts=prepare_decode_attempts,
         )
 
         n = len(items)

@@ -18,6 +18,10 @@ class Settings:
     pairwise_parallel: int
     #: Max concurrent URL downloads + wav transcodes during job prepare (1 = fully serial).
     prepare_parallel: int
+    #: Per-URL HTTP download attempts (each attempt retries transient errors inside audio_io).
+    prepare_download_attempts: int
+    #: Per-file decode_to_wav attempts (ffmpeg / librosa flakes).
+    prepare_decode_attempts: int
 
 
 def load_settings() -> Settings:
@@ -44,6 +48,20 @@ def load_settings() -> Settings:
         prepare_parallel = 8
     prepare_parallel = max(1, min(prepare_parallel, 32))
 
+    raw_pda = os.environ.get("SPEECHJUDGE_PREPARE_DOWNLOAD_ATTEMPTS", "5").strip()
+    try:
+        prepare_download_attempts = int(raw_pda)
+    except ValueError:
+        prepare_download_attempts = 5
+    prepare_download_attempts = max(1, min(prepare_download_attempts, 15))
+
+    raw_pdec = os.environ.get("SPEECHJUDGE_PREPARE_DECODE_ATTEMPTS", "3").strip()
+    try:
+        prepare_decode_attempts = int(raw_pdec)
+    except ValueError:
+        prepare_decode_attempts = 3
+    prepare_decode_attempts = max(1, min(prepare_decode_attempts, 10))
+
     return Settings(
         jobs_state_dir=jobs_state_dir,
         job_files_root=job_files_root,
@@ -52,4 +70,6 @@ def load_settings() -> Settings:
         thinker=os.environ.get("SPEECHJUDGE_THINKER", "").lower() in {"1", "true", "yes"},
         pairwise_parallel=pairwise_parallel,
         prepare_parallel=prepare_parallel,
+        prepare_download_attempts=prepare_download_attempts,
+        prepare_decode_attempts=prepare_decode_attempts,
     )
