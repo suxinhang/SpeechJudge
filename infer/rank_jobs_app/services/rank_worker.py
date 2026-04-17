@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import functools
 import shutil
+
+import torch
 import threading
 import time
 import uuid
@@ -340,6 +342,51 @@ async def run_rank_job(
                 done += 1
             return pref
 
+        def _is_cuda_oom(exc: BaseException) -> bool:
+            oom_t = getattr(torch.cuda, "OutOfMemoryError", None)
+            if oom_t is not None and isinstance(exc, oom_t):
+                return True
+            msg = str(exc).lower()
+            return "out of memory" in msg or "cuda error: out of memory" in msg
+
+        def _prefs_for_pairs(pairs: list[tuple[str, str]]) -> list[int]:
+            """Batched infer; on CUDA OOM split batch or fall back to one pair at a time."""
+            if not pairs:
+                return []
+            try:
+                with MODEL.context():
+                    return pairwise_preferences_batched(
+                        processor,
+                        model,
+                        is_omni=not settings.thinker,
+                        max_new_tokens=None,
+                        target_text=target_text,
+                        pairs=pairs,
+                    )
+            except BaseException as exc:
+                if not _is_cuda_oom(exc):
+                    raise
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                if len(pairs) == 1:
+                    lf, rt = pairs[0]
+                    with MODEL.infer_lock(), MODEL.context():
+                        return [
+                            pairwise_preference(
+                                processor,
+                                model,
+                                is_omni=not settings.thinker,
+                                max_new_tokens=None,
+                                target_text=target_text,
+                                left_wav=lf,
+                                right_wav=rt,
+                            )
+                        ]
+                mid = len(pairs) // 2
+                if mid == 0:
+                    mid = 1
+                return _prefs_for_pairs(pairs[:mid]) + _prefs_for_pairs(pairs[mid:])
+
         def compare_snap_batch(snap: list[tuple[int, str, str]]) -> dict[int, int]:
             """Chunk disjoint pairs into batched ``generate`` calls (true GPU batching)."""
             prefs_out: dict[int, int] = {}
@@ -348,33 +395,7 @@ async def run_rank_job(
                 chunk = snap[off : off + bs]
                 indices = [t[0] for t in chunk]
                 pairs = [(t[1], t[2]) for t in chunk]
-                try:
-                    with MODEL.context():
-                        prefs = pairwise_preferences_batched(
-                            processor,
-                            model,
-                            is_omni=not settings.thinker,
-                            max_new_tokens=None,
-                            target_text=target_text,
-                            pairs=pairs,
-                        )
-                except RuntimeError as exc:
-                    if "out of memory" not in str(exc).lower():
-                        raise
-                    prefs = []
-                    for lf, rt in pairs:
-                        with MODEL.infer_lock(), MODEL.context():
-                            prefs.append(
-                                pairwise_preference(
-                                    processor,
-                                    model,
-                                    is_omni=not settings.thinker,
-                                    max_new_tokens=None,
-                                    target_text=target_text,
-                                    left_wav=lf,
-                                    right_wav=rt,
-                                )
-                            )
+                prefs = _prefs_for_pairs(pairs)
                 for k, j in enumerate(indices):
                     prefs_out[j] = prefs[k]
             with done_lock:

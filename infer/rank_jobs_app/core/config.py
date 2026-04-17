@@ -34,11 +34,11 @@ def load_settings() -> Settings:
     jobs_state_dir = Path(
         os.environ.get("SPEECHJUDGE_RANK_JOBS_JSON_DIR", str(default_state))
     ).expanduser()
-    raw_pp = os.environ.get("SPEECHJUDGE_PAIRWISE_PARALLEL", "5").strip()
+    raw_pp = os.environ.get("SPEECHJUDGE_PAIRWISE_PARALLEL", "3").strip()
     try:
         pairwise_parallel = int(raw_pp)
     except ValueError:
-        pairwise_parallel = 5
+        pairwise_parallel = 3
     pairwise_parallel = max(1, min(pairwise_parallel, 32))
 
     raw_prep = os.environ.get("SPEECHJUDGE_PREPARE_PARALLEL", "8").strip()

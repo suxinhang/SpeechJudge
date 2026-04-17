@@ -63,7 +63,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 detail="Provide urls_json and/or audio_files (multipart uploads).",
             )
 
-        pp = int(getattr(settings, "pairwise_parallel", 5))
+        pp = int(getattr(settings, "pairwise_parallel", 3))
         if pairwise_parallel is not None:
             pp = int(pairwise_parallel)
             if pp < 1 or pp > 32:
