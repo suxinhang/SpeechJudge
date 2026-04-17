@@ -8,6 +8,58 @@ from main_grm import effective_max_new_tokens
 from utils import build_cot_conversation, build_qwen_omni_inputs, extract_rating
 
 
+def _build_ab_only_conversation(target_text: str, wav_path_a: str, wav_path_b: str) -> list[dict]:
+    return [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "You compare two TTS audios for naturalness. "
+                        "Reply with exactly one uppercase letter: A or B."
+                    ),
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Choose the more natural audio for the target text.",
+                },
+                {"type": "text", "text": f"Target text: {target_text}"},
+                {"type": "text", "text": "Audio A:"},
+                {"type": "audio", "audio": wav_path_a},
+                {"type": "text", "text": "Audio B:"},
+                {"type": "audio", "audio": wav_path_b},
+                {
+                    "type": "text",
+                    "text": (
+                        "Return only A if Audio A is better, or only B if Audio B is better. "
+                        "Do not explain."
+                    ),
+                },
+            ],
+        },
+    ]
+
+
+def _resolve_pairwise_max_new_tokens(max_new_tokens: int | None, model: object) -> int:
+    return min(effective_max_new_tokens(max_new_tokens, model), 4)
+
+
+def _pref_from_text(text: str) -> int:
+    stripped = text.strip().upper()
+    if stripped.startswith("A"):
+        return 1
+    if stripped.startswith("B"):
+        return -1
+    rating, _raw = extract_rating(text)
+    return _rating_to_pref(rating)
+
+
 def _rating_to_pref(rating: dict | None) -> int:
     if rating is None:
         return 0
@@ -45,19 +97,18 @@ def compare_wavs_deterministic(
     max_new_tokens: int | None = None,
 ) -> Tuple[dict | None, str]:
     """
-    Pairwise compare like ``infer/main_grm.compare_wavs``, but with ``do_sample=False``
-    for more stable repeated comparisons during sorting.
+    Pairwise compare with a minimal A/B-only reply for faster, more stable sorting.
     """
-    conversion = build_cot_conversation(target_text, wav_path_a, wav_path_b)
+    conversion = _build_ab_only_conversation(target_text, wav_path_a, wav_path_b)
     omni_inputs = build_qwen_omni_inputs(processor, conversion)
-    omni_inputs = omni_inputs.to(model.device).to(model.dtype)
-    prompt_length = omni_inputs["input_ids"].shape[1]
+    prepared = _prepare_omni_inputs_for_model(omni_inputs, model)
+    prompt_length = prepared["input_ids"].shape[1]
 
-    gen_max = effective_max_new_tokens(max_new_tokens, model)
+    gen_max = _resolve_pairwise_max_new_tokens(max_new_tokens, model)
 
     if is_omni:
         text_ids = model.generate(
-            **omni_inputs,
+            **prepared,
             use_audio_in_video=False,
             do_sample=False,
             return_audio=False,
@@ -65,7 +116,7 @@ def compare_wavs_deterministic(
         )
     else:
         text_ids = model.generate(
-            **omni_inputs,
+            **prepared,
             use_audio_in_video=False,
             do_sample=False,
             max_new_tokens=gen_max,
@@ -77,7 +128,12 @@ def compare_wavs_deterministic(
     text = processor.batch_decode(
         text_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )
-    return extract_rating(text[0])
+    pref = _pref_from_text(text[0])
+    if pref > 0:
+        return {"output_a": "1", "output_b": "0"}, text[0]
+    if pref < 0:
+        return {"output_a": "0", "output_b": "1"}, text[0]
+    return None, text[0]
 
 
 def pairwise_preference(
@@ -117,12 +173,12 @@ def pairwise_preferences_batched(
     """Run one batched ``model.generate`` for many (left_wav, right_wav) pairs (real GPU parallelism)."""
     if not pairs:
         return []
-    conversations = [build_cot_conversation(target_text, a, b) for a, b in pairs]
+    conversations = [_build_ab_only_conversation(target_text, a, b) for a, b in pairs]
     omni_inputs = build_qwen_omni_inputs(processor, conversations)
     prepared = _prepare_omni_inputs_for_model(omni_inputs, model)
     prompt_length = int(prepared["input_ids"].shape[1])
 
-    gen_max = effective_max_new_tokens(max_new_tokens, model)
+    gen_max = _resolve_pairwise_max_new_tokens(max_new_tokens, model)
 
     if is_omni:
         text_ids = model.generate(
@@ -147,4 +203,4 @@ def pairwise_preferences_batched(
     decoded = processor.batch_decode(
         gen_only, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )
-    return [_rating_to_pref(extract_rating(t)[0]) for t in decoded]
+    return [_pref_from_text(text) for text in decoded]
