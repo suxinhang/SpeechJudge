@@ -10,6 +10,7 @@
 #   SPEECHJUDGE_MODEL_PATH      模型目录；未设则仅检查常见默认路径并告警
 #   SPEECHJUDGE_RANK_JOB_DIR    任务工作目录（默认 repo/data/rank_jobs）
 #   SPEECHJUDGE_RANK_JOBS_JSON_DIR  任务 JSON 目录（默认 $SPEECHJUDGE_RANK_JOB_DIR/_json_jobs）
+#   SPEECHJUDGE_PAIRWISE_PARALLEL   单相位内并发 pairwise 数（默认 5；1=串行并加锁）
 
 set -euo pipefail
 

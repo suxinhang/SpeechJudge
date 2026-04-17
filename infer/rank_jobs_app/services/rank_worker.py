@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import shutil
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -180,23 +183,50 @@ async def prepare_job_inputs(
     return items
 
 
-def _bubble_sort_sync(
+def _odd_even_sort_sync(
     *,
     items: list[dict[str, Any]],
-    on_compare,
+    compare_pair: Callable[[str, str], int],
+    parallel: int,
 ) -> list[dict[str, Any]]:
+    """Odd-even transposition sort; within each phase, disjoint pairs compare in parallel."""
     arr = list(items)
     n = len(arr)
     if n <= 1:
         return arr
+    workers = max(1, min(int(parallel), 32))
 
-    for i in range(n):
-        for j in range(0, n - i - 1):
-            left = arr[j]["wav_path"]
-            right = arr[j + 1]["wav_path"]
-            pref = on_compare(left, right)
-            if pref < 0:
-                arr[j], arr[j + 1] = arr[j + 1], arr[j]
+    def _run_phase_batch(snap: list[tuple[int, str, str]]) -> dict[int, int]:
+        if not snap:
+            return {}
+        use = min(workers, len(snap))
+        if use <= 1:
+            prefs: dict[int, int] = {}
+            for j, left, right in snap:
+                prefs[j] = compare_pair(left, right)
+            return prefs
+        prefs = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=use) as ex:
+            fut_to_j = {ex.submit(compare_pair, left, right): j for j, left, right in snap}
+            for fut in concurrent.futures.as_completed(fut_to_j):
+                j = fut_to_j[fut]
+                prefs[j] = fut.result()
+        return prefs
+
+    while True:
+        changed = False
+        for start in (1, 0):
+            pairs_idx = [j for j in range(start, n - 1, 2)]
+            if not pairs_idx:
+                continue
+            snap = [(j, arr[j]["wav_path"], arr[j + 1]["wav_path"]) for j in pairs_idx]
+            prefs = _run_phase_batch(snap)
+            for j in pairs_idx:
+                if prefs[j] < 0:
+                    arr[j], arr[j + 1] = arr[j + 1], arr[j]
+                    changed = True
+        if not changed:
+            break
     return arr
 
 
@@ -238,35 +268,51 @@ async def run_rank_job(
             return
 
         total_cmp = _bubble_sort_total_comparisons(n)
+        parallel = int(getattr(settings, "pairwise_parallel", 5))
         await _update_job(
             store,
             job_id,
             {
                 "phase": "sort",
-                "message": "Bubble sorting (pairwise comparisons)",
+                "message": f"Odd-even sort (pairwise_parallel={parallel})",
                 "n_items": n,
                 "comparisons_total": total_cmp,
                 "comparisons_done": 0,
                 "progress": 0.0,
+                "pairwise_parallel": parallel,
             },
         )
 
         model, processor = MODEL.get()
         done = 0
+        done_lock = threading.Lock()
 
-        def on_compare(left_wav: str, right_wav: str) -> int:
+        def compare_pair(left_wav: str, right_wav: str) -> int:
             nonlocal done
-            with MODEL.infer_lock(), MODEL.context():
-                pref = pairwise_preference(
-                    processor,
-                    model,
-                    is_omni=not settings.thinker,
-                    max_new_tokens=None,
-                    target_text=target_text,
-                    left_wav=left_wav,
-                    right_wav=right_wav,
-                )
-            done += 1
+            if parallel <= 1:
+                with MODEL.infer_lock(), MODEL.context():
+                    pref = pairwise_preference(
+                        processor,
+                        model,
+                        is_omni=not settings.thinker,
+                        max_new_tokens=None,
+                        target_text=target_text,
+                        left_wav=left_wav,
+                        right_wav=right_wav,
+                    )
+            else:
+                with MODEL.context():
+                    pref = pairwise_preference(
+                        processor,
+                        model,
+                        is_omni=not settings.thinker,
+                        max_new_tokens=None,
+                        target_text=target_text,
+                        left_wav=left_wav,
+                        right_wav=right_wav,
+                    )
+            with done_lock:
+                done += 1
             return pref
 
         last_report = {"t": 0.0}
@@ -294,7 +340,11 @@ async def run_rank_job(
         try:
 
             def runner() -> list[dict[str, Any]]:
-                return _bubble_sort_sync(items=items, on_compare=on_compare)
+                return _odd_even_sort_sync(
+                    items=items,
+                    compare_pair=compare_pair,
+                    parallel=parallel,
+                )
 
             ranked = await asyncio.to_thread(runner)
         finally:

@@ -14,6 +14,8 @@ class Settings:
     model_path: str
     cuda_device_raw: str | None
     thinker: bool
+    #: How many pairwise model calls may run at once within one odd-even phase (1 = serial + infer lock).
+    pairwise_parallel: int
 
 
 def load_settings() -> Settings:
@@ -26,10 +28,18 @@ def load_settings() -> Settings:
     jobs_state_dir = Path(
         os.environ.get("SPEECHJUDGE_RANK_JOBS_JSON_DIR", str(default_state))
     ).expanduser()
+    raw_pp = os.environ.get("SPEECHJUDGE_PAIRWISE_PARALLEL", "5").strip()
+    try:
+        pairwise_parallel = int(raw_pp)
+    except ValueError:
+        pairwise_parallel = 5
+    pairwise_parallel = max(1, min(pairwise_parallel, 32))
+
     return Settings(
         jobs_state_dir=jobs_state_dir,
         job_files_root=job_files_root,
         model_path=os.environ.get("SPEECHJUDGE_MODEL_PATH", "pretrained/SpeechJudge-GRM"),
         cuda_device_raw=os.environ.get("SPEECHJUDGE_CUDA_DEVICE"),
         thinker=os.environ.get("SPEECHJUDGE_THINKER", "").lower() in {"1", "true", "yes"},
+        pairwise_parallel=pairwise_parallel,
     )

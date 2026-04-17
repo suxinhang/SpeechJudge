@@ -15,6 +15,8 @@ cd /root/SpeechJudge/infer
 # ======================
 export SPEECHJUDGE_MODEL_PATH="/root/models/SpeechJudge-GRM"
 export SPEECHJUDGE_CUDA_DEVICE="0"
+# Odd-even rank: concurrent pairwise compares per phase (default 5). Use 1 for fully serial + infer lock.
+# export SPEECHJUDGE_PAIRWISE_PARALLEL=5
 
 # ======================
 # 3. 日志目录
