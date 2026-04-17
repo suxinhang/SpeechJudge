@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import math
 import shutil
 
 import torch
@@ -19,15 +20,18 @@ from fastapi import UploadFile
 from ..db.json_jobs import JsonJobStore
 from .audio_io import download_url_to_file, ensure_wav
 from .model_runtime import MODEL
-from .pairwise import pairwise_preference, pairwise_preferences_batched
+from .pairwise import pairwise_preference
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _bubble_sort_total_comparisons(n: int) -> int:
-    return n * (n - 1) // 2 if n > 1 else 0
+def _merge_sort_total_comparisons(n: int) -> int:
+    if n <= 1:
+        return 0
+    levels = math.ceil(math.log2(n))
+    return n * levels - (1 << levels) + 1
 
 
 def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
@@ -220,43 +224,49 @@ async def prepare_job_inputs(
     return items
 
 
-def _odd_even_sort_sync(
+def _merge_sort_sync(
     *,
     items: list[dict[str, Any]],
     compare_pair: Callable[[str, str], int],
-    compare_snap_batch: Callable[[list[tuple[int, str, str]]], dict[int, int]] | None,
 ) -> list[dict[str, Any]]:
-    """Odd-even transposition sort; batched GPU forwards when ``compare_snap_batch`` is set."""
+    """Stable merge sort using far fewer model comparisons than odd-even sort."""
     arr = list(items)
     n = len(arr)
     if n <= 1:
         return arr
 
-    def _run_phase_batch(snap: list[tuple[int, str, str]]) -> dict[int, int]:
-        if not snap:
-            return {}
-        if compare_snap_batch is not None:
-            return compare_snap_batch(snap)
-        prefs: dict[int, int] = {}
-        for j, left, right in snap:
-            prefs[j] = compare_pair(left, right)
-        return prefs
+    def _merge(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        i = 0
+        j = 0
+        while i < len(left) and j < len(right):
+            pref = compare_pair(left[i]["wav_path"], right[j]["wav_path"])
+            if pref >= 0:
+                merged.append(left[i])
+                i += 1
+            else:
+                merged.append(right[j])
+                j += 1
+        if i < len(left):
+            merged.extend(left[i:])
+        if j < len(right):
+            merged.extend(right[j:])
+        return merged
 
-    while True:
-        changed = False
-        for start in (1, 0):
-            pairs_idx = [j for j in range(start, n - 1, 2)]
-            if not pairs_idx:
+    width = 1
+    work = arr
+    while width < n:
+        merged_pass: list[dict[str, Any]] = []
+        for start in range(0, n, 2 * width):
+            left = work[start : start + width]
+            right = work[start + width : start + 2 * width]
+            if not right:
+                merged_pass.extend(left)
                 continue
-            snap = [(j, arr[j]["wav_path"], arr[j + 1]["wav_path"]) for j in pairs_idx]
-            prefs = _run_phase_batch(snap)
-            for j in pairs_idx:
-                if prefs[j] < 0:
-                    arr[j], arr[j + 1] = arr[j + 1], arr[j]
-                    changed = True
-        if not changed:
-            break
-    return arr
+            merged_pass.extend(_merge(left, right))
+        work = merged_pass
+        width *= 2
+    return work
 
 
 async def run_rank_job(
@@ -303,17 +313,14 @@ async def run_rank_job(
             )
             return
 
-        total_cmp = _bubble_sort_total_comparisons(n)
+        total_cmp = _merge_sort_total_comparisons(n)
         parallel = max(1, min(int(pairwise_parallel), 32))
         await _update_job(
             store,
             job_id,
             {
                 "phase": "sort",
-                "message": (
-                    f"Odd-even sort (pairwise_parallel={parallel}, "
-                    f"batched GPU forward when parallel>1)"
-                ),
+                "message": f"Merge sort ranking (estimated comparisons<={total_cmp})",
                 "n_items": n,
                 "comparisons_total": total_cmp,
                 "comparisons_done": 0,
@@ -342,67 +349,6 @@ async def run_rank_job(
                 done += 1
             return pref
 
-        def _is_cuda_oom(exc: BaseException) -> bool:
-            oom_t = getattr(torch.cuda, "OutOfMemoryError", None)
-            if oom_t is not None and isinstance(exc, oom_t):
-                return True
-            msg = str(exc).lower()
-            return "out of memory" in msg or "cuda error: out of memory" in msg
-
-        def _prefs_for_pairs(pairs: list[tuple[str, str]]) -> list[int]:
-            """Batched infer; on CUDA OOM split batch or fall back to one pair at a time."""
-            if not pairs:
-                return []
-            try:
-                with MODEL.context():
-                    return pairwise_preferences_batched(
-                        processor,
-                        model,
-                        is_omni=not settings.thinker,
-                        max_new_tokens=None,
-                        target_text=target_text,
-                        pairs=pairs,
-                    )
-            except BaseException as exc:
-                if not _is_cuda_oom(exc):
-                    raise
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if len(pairs) == 1:
-                    lf, rt = pairs[0]
-                    with MODEL.infer_lock(), MODEL.context():
-                        return [
-                            pairwise_preference(
-                                processor,
-                                model,
-                                is_omni=not settings.thinker,
-                                max_new_tokens=None,
-                                target_text=target_text,
-                                left_wav=lf,
-                                right_wav=rt,
-                            )
-                        ]
-                mid = len(pairs) // 2
-                if mid == 0:
-                    mid = 1
-                return _prefs_for_pairs(pairs[:mid]) + _prefs_for_pairs(pairs[mid:])
-
-        def compare_snap_batch(snap: list[tuple[int, str, str]]) -> dict[int, int]:
-            """Chunk disjoint pairs into batched ``generate`` calls (true GPU batching)."""
-            prefs_out: dict[int, int] = {}
-            bs = max(1, min(int(parallel), 32))
-            for off in range(0, len(snap), bs):
-                chunk = snap[off : off + bs]
-                indices = [t[0] for t in chunk]
-                pairs = [(t[1], t[2]) for t in chunk]
-                prefs = _prefs_for_pairs(pairs)
-                for k, j in enumerate(indices):
-                    prefs_out[j] = prefs[k]
-            with done_lock:
-                nonlocal done
-                done += len(snap)
-            return prefs_out
-
         last_report = {"t": 0.0}
 
         async def progress_reporter() -> None:
@@ -430,10 +376,9 @@ async def run_rank_job(
         try:
 
             def runner() -> list[dict[str, Any]]:
-                return _odd_even_sort_sync(
+                return _merge_sort_sync(
                     items=items,
                     compare_pair=compare_pair,
-                    compare_snap_batch=compare_snap_batch if parallel > 1 else None,
                 )
 
             ranked = await asyncio.to_thread(runner)
