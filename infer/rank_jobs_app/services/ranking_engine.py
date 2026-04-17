@@ -80,11 +80,12 @@ class RankingEngine:
         phase_limits = phase_budgets(len(items), self.config)
         phase_counts = {phase: 0 for phase in phase_limits}
         pair_stats: dict[tuple[str, str], _PairStats] = {}
-        total_budget = sum(phase_limits.values())
+        estimated_total_budget = sum(phase_limits.values())
         explore_schedule = self._round_robin_pairs([item.id for item in items])
         explore_cursor = 0
+        last_phase = PHASE_EXPLORE
 
-        def emit_progress(phase: str) -> None:
+        def emit_progress(phase: str, *, total_budget: int = estimated_total_budget) -> None:
             if progress_callback is None:
                 return
             progress_callback(
@@ -97,6 +98,7 @@ class RankingEngine:
             )
 
         for phase in (PHASE_EXPLORE, PHASE_EXPLOIT, PHASE_TOP_K):
+            last_phase = phase
             emit_progress(phase)
             while phase_counts[phase] < phase_limits[phase]:
                 need = min(batch_size, phase_limits[phase] - phase_counts[phase])
@@ -143,6 +145,9 @@ class RankingEngine:
             states.values(),
             key=lambda state: (-state.rating, -state.wins, state.comparisons, state.item.id),
         )
+        comparisons_done = sum(phase_counts.values())
+        comparisons_total = estimated_total_budget if comparisons_done >= estimated_total_budget else comparisons_done
+        emit_progress(last_phase, total_budget=comparisons_total)
         return RankingResult(
             items=[
                 RankedItemResult(
@@ -154,8 +159,8 @@ class RankingEngine:
                 )
                 for state in ranked
             ],
-            comparisons_done=sum(phase_counts.values()),
-            comparisons_total=total_budget,
+            comparisons_done=comparisons_done,
+            comparisons_total=comparisons_total,
             phase_comparisons=dict(phase_counts),
         )
 
@@ -320,9 +325,13 @@ class RankingEngine:
                 total = 0 if stats is None else stats.total
                 uncertainty = 1.0 if stats is None else stats.uncertainty()
                 diff = abs(states[left_id].rating - states[right_id].rating)
-                boundary_distance = abs(right_idx - boundary_idx)
+                left_boundary_distance = abs(left_idx - boundary_idx)
+                right_boundary_distance = abs(right_idx - boundary_idx)
+                boundary_distance = max(left_boundary_distance, right_boundary_distance)
+                span = right_idx - left_idx
                 score = (
                     boundary_distance,
+                    span,
                     0 if total == 0 else 1,
                     total,
                     diff,

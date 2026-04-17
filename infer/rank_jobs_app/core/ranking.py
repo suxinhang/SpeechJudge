@@ -89,16 +89,25 @@ class RankingResult:
     phase_comparisons: dict[str, int]
 
 
+def max_comparison_budget(n_items: int, config: RankingConfig) -> int:
+    if n_items <= 1:
+        return 0
+    normalized = config.normalized()
+    unique_pairs = n_items * (n_items - 1) // 2
+    return unique_pairs * normalized.max_pair_repeats
+
+
 def estimate_total_budget(n_items: int, config: RankingConfig) -> int:
     if n_items <= 1:
         return 0
     normalized = config.normalized()
     levels = max(1, math.ceil(math.log2(n_items)))
     baseline = n_items * levels - (1 << levels) + 1
-    return max(
+    estimated = max(
         int(math.ceil(baseline * normalized.budget_multiplier)),
         n_items * normalized.min_budget_per_item,
     )
+    return min(estimated, max_comparison_budget(n_items, normalized))
 
 
 def phase_budgets(n_items: int, config: RankingConfig) -> dict[str, int]:
