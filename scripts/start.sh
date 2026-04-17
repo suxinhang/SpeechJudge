@@ -89,13 +89,61 @@ if [[ -z "${CLOUDFLARED_BIN:-}" ]]; then
     CLOUDFLARED_BIN="$(command -v cloudflared || true)"
   fi
 fi
+
+# 未找到或未可执行：Linux 下尝试从 GitHub 下载官方二进制到 /root/bin（需 curl 或 wget）。
+# 离线或不想自动下载时: export SKIP_CLOUDFLARED_DOWNLOAD=1
+if [[ -z "$CLOUDFLARED_BIN" ]] || [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+  if [[ -n "$CLOUDFLARED_BIN" ]] && [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+    echo "[WARN] cloudflared exists but is not executable: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+    echo "[WARN] try: chmod +x \"$CLOUDFLARED_BIN\"" | tee -a "$LOG_FILE"
+  fi
+  if [[ "${SKIP_CLOUDFLARED_DOWNLOAD:-}" != "1" ]] && [[ "$(uname -s)" == "Linux" ]]; then
+    _cf_arch=""
+    case "$(uname -m)" in
+      x86_64) _cf_arch=amd64 ;;
+      aarch64|arm64) _cf_arch=arm64 ;;
+    esac
+    if [[ -n "$_cf_arch" ]] && { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; }; then
+      echo "[INFO] cloudflared missing; downloading cloudflared-linux-${_cf_arch} -> /root/bin/cloudflared ..." | tee -a "$LOG_FILE"
+      mkdir -p /root/bin
+      _cf_tmp="/root/bin/cloudflared.tmp.$$"
+      _cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${_cf_arch}"
+      set +e
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$_cf_url" -o "$_cf_tmp"
+      else
+        wget -q "$_cf_url" -O "$_cf_tmp"
+      fi
+      _cf_dl=$?
+      set -e
+      if [[ "$_cf_dl" -eq 0 ]] && [[ -s "$_cf_tmp" ]]; then
+        chmod +x "$_cf_tmp"
+        mv -f "$_cf_tmp" /root/bin/cloudflared
+        CLOUDFLARED_BIN="/root/bin/cloudflared"
+        echo "[SUCCESS] installed cloudflared at $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+      else
+        rm -f "$_cf_tmp"
+        echo "[WARN] cloudflared auto-download failed (network or arch?)." | tee -a "$LOG_FILE"
+      fi
+    elif [[ -z "$_cf_arch" ]]; then
+      echo "[WARN] unsupported machine for auto-download: $(uname -m); install cloudflared manually." | tee -a "$LOG_FILE"
+    else
+      echo "[WARN] need curl or wget to auto-download cloudflared." | tee -a "$LOG_FILE"
+    fi
+  elif [[ "${SKIP_CLOUDFLARED_DOWNLOAD:-}" == "1" ]]; then
+    echo "[INFO] SKIP_CLOUDFLARED_DOWNLOAD=1; not attempting cloudflared download." | tee -a "$LOG_FILE"
+  fi
+fi
+
 START_TUNNEL=1
 if [[ -z "$CLOUDFLARED_BIN" ]]; then
-  echo "[WARN] cloudflared not found in PATH; skip public tunnel." | tee -a "$LOG_FILE"
+  echo "[WARN] cloudflared not available; skip public tunnel." | tee -a "$LOG_FILE"
+  echo "[HINT] Linux x86_64 manual install:" | tee -a "$LOG_FILE"
+  echo "  mkdir -p /root/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /root/bin/cloudflared && chmod +x /root/bin/cloudflared" | tee -a "$LOG_FILE"
+  echo "[HINT] Docs: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/" | tee -a "$LOG_FILE"
   START_TUNNEL=0
 elif [[ ! -x "$CLOUDFLARED_BIN" ]]; then
-  echo "[WARN] cloudflared exists but is not executable: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
-  echo "[WARN] fix with: chmod +x \"$CLOUDFLARED_BIN\" (or install as executable), then retry." | tee -a "$LOG_FILE"
+  echo "[WARN] cloudflared is not executable: $CLOUDFLARED_BIN — skip tunnel." | tee -a "$LOG_FILE"
   START_TUNNEL=0
 fi
 
