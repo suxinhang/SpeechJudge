@@ -3,35 +3,34 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import math
 import shutil
 
-import torch
 import threading
 import time
 import uuid
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from fastapi import UploadFile
 
+from ..core.ranking import (
+    PHASE_EXPLOIT,
+    PHASE_EXPLORE,
+    PHASE_TOP_K,
+    RankingConfig,
+    RankingItem,
+    estimate_total_budget,
+)
 from ..db.json_jobs import JsonJobStore
 from .audio_io import download_url_to_file, ensure_wav
 from .model_runtime import MODEL
-from .pairwise import pairwise_preference
+from .pairwise import pairwise_preferences_batched
+from .ranking_engine import RankingEngine
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _merge_sort_total_comparisons(n: int) -> int:
-    if n <= 1:
-        return 0
-    levels = math.ceil(math.log2(n))
-    return n * levels - (1 << levels) + 1
 
 
 def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
@@ -224,49 +223,14 @@ async def prepare_job_inputs(
     return items
 
 
-def _merge_sort_sync(
-    *,
-    items: list[dict[str, Any]],
-    compare_pair: Callable[[str, str], int],
-) -> list[dict[str, Any]]:
-    """Stable merge sort using far fewer model comparisons than odd-even sort."""
-    arr = list(items)
-    n = len(arr)
-    if n <= 1:
-        return arr
-
-    def _merge(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = []
-        i = 0
-        j = 0
-        while i < len(left) and j < len(right):
-            pref = compare_pair(left[i]["wav_path"], right[j]["wav_path"])
-            if pref >= 0:
-                merged.append(left[i])
-                i += 1
-            else:
-                merged.append(right[j])
-                j += 1
-        if i < len(left):
-            merged.extend(left[i:])
-        if j < len(right):
-            merged.extend(right[j:])
-        return merged
-
-    width = 1
-    work = arr
-    while width < n:
-        merged_pass: list[dict[str, Any]] = []
-        for start in range(0, n, 2 * width):
-            left = work[start : start + width]
-            right = work[start + width : start + 2 * width]
-            if not right:
-                merged_pass.extend(left)
-                continue
-            merged_pass.extend(_merge(left, right))
-        work = merged_pass
-        width *= 2
-    return work
+def _phase_message(phase: str, *, top_k: int) -> str:
+    if phase == PHASE_EXPLORE:
+        return "Exploration: broad pair coverage"
+    if phase == PHASE_EXPLOIT:
+        return "Exploitation: compare nearby Elo ratings"
+    if phase == PHASE_TOP_K:
+        return f"Top-K refine: reinforce top {top_k} boundary"
+    return "Ranking"
 
 
 async def run_rank_job(
@@ -313,41 +277,78 @@ async def run_rank_job(
             )
             return
 
-        total_cmp = _merge_sort_total_comparisons(n)
         parallel = max(1, min(int(pairwise_parallel), 32))
+        rank_config = RankingConfig(
+            top_k=min(max(1, int(getattr(settings, "rank_top_k", 20))), n),
+            budget_multiplier=float(getattr(settings, "rank_budget_multiplier", 2.0)),
+            neighbor_window=int(getattr(settings, "rank_neighbor_window", 4)),
+            max_pair_repeats=int(getattr(settings, "rank_max_pair_repeats", 3)),
+        )
+        total_cmp = estimate_total_budget(n, rank_config)
         await _update_job(
             store,
             job_id,
             {
                 "phase": "sort",
-                "message": f"Merge sort ranking (estimated comparisons<={total_cmp})",
+                "message": f"Phased Elo ranking (estimated comparisons<={total_cmp})",
                 "n_items": n,
                 "comparisons_total": total_cmp,
                 "comparisons_done": 0,
                 "progress": 0.0,
                 "pairwise_parallel": parallel,
+                "ranking_strategy": {
+                    "algorithm": "phased_elo",
+                    "top_k": rank_config.top_k,
+                    "budget_multiplier": rank_config.budget_multiplier,
+                    "neighbor_window": rank_config.neighbor_window,
+                    "max_pair_repeats": rank_config.max_pair_repeats,
+                },
             },
         )
 
         model, processor = MODEL.get()
-        done = 0
-        done_lock = threading.Lock()
+        progress_state: dict[str, Any] = {
+            "phase": PHASE_EXPLORE,
+            "done": 0,
+            "total": total_cmp,
+            "phase_counts": {
+                PHASE_EXPLORE: 0,
+                PHASE_EXPLOIT: 0,
+                PHASE_TOP_K: 0,
+            },
+        }
+        progress_lock = threading.Lock()
 
-        def compare_pair(left_wav: str, right_wav: str) -> int:
-            nonlocal done
+        ranking_items = [
+            RankingItem(
+                id=str(it["id"]),
+                wav_path=str(it["wav_path"]),
+                label=it.get("label"),
+                source=it.get("source"),
+                url=it.get("url"),
+            )
+            for it in items
+        ]
+        engine = RankingEngine(rank_config)
+
+        def compare_batch(batch: list[tuple[RankingItem, RankingItem]]) -> list[int]:
+            wav_pairs = [(left.wav_path, right.wav_path) for left, right in batch]
             with MODEL.infer_lock(), MODEL.context():
-                pref = pairwise_preference(
+                return pairwise_preferences_batched(
                     processor,
                     model,
                     is_omni=not settings.thinker,
                     max_new_tokens=None,
                     target_text=target_text,
-                    left_wav=left_wav,
-                    right_wav=right_wav,
+                    pairs=wav_pairs,
                 )
-            with done_lock:
-                done += 1
-            return pref
+
+        def on_progress(snapshot) -> None:
+            with progress_lock:
+                progress_state["phase"] = snapshot.phase
+                progress_state["done"] = snapshot.comparisons_done
+                progress_state["total"] = snapshot.comparisons_total
+                progress_state["phase_counts"] = dict(snapshot.phase_comparisons)
 
         last_report = {"t": 0.0}
 
@@ -361,24 +362,33 @@ async def run_rank_job(
                 if now - last_report["t"] < 1.0:
                     continue
                 last_report["t"] = now
-                with done_lock:
-                    d = done
+                with progress_lock:
+                    current_phase = str(progress_state["phase"])
+                    done = int(progress_state["done"])
+                    total = int(progress_state["total"])
+                    phase_counts = dict(progress_state["phase_counts"])
                 await _update_job(
                     store,
                     job_id,
                     {
-                        "comparisons_done": d,
-                        "progress": (d / total_cmp) if total_cmp else 1.0,
+                        "phase": current_phase,
+                        "message": _phase_message(current_phase, top_k=rank_config.top_k),
+                        "comparisons_done": done,
+                        "comparisons_total": total,
+                        "phase_comparisons": phase_counts,
+                        "progress": (done / total) if total else 1.0,
                     },
                 )
 
         reporter = asyncio.create_task(progress_reporter())
         try:
 
-            def runner() -> list[dict[str, Any]]:
-                return _merge_sort_sync(
-                    items=items,
-                    compare_pair=compare_pair,
+            def runner():
+                return engine.run(
+                    items=ranking_items,
+                    compare_batch=compare_batch,
+                    batch_size=parallel,
+                    progress_callback=on_progress,
                 )
 
             ranked = await asyncio.to_thread(runner)
@@ -388,15 +398,18 @@ async def run_rank_job(
             with contextlib.suppress(asyncio.CancelledError):
                 await reporter
 
-        ranked_ids = [it["id"] for it in ranked]
+        ranked_ids = [it.item.id for it in ranked.items]
         ranked_items_public = [
             {
-                "id": it["id"],
-                "label": it.get("label"),
-                "source": it.get("source"),
-                "url": it.get("url"),
+                "id": it.item.id,
+                "label": it.item.label,
+                "source": it.item.source,
+                "url": it.item.url,
+                "rating": round(it.rating, 3),
+                "comparisons": it.comparisons,
+                "ties": it.ties,
             }
-            for it in ranked
+            for it in ranked.items
         ]
         await _update_job(
             store,
@@ -405,8 +418,9 @@ async def run_rank_job(
                 "status": "succeeded",
                 "phase": "done",
                 "message": "Completed",
-                "comparisons_done": done,
-                "comparisons_total": total_cmp,
+                "comparisons_done": ranked.comparisons_done,
+                "comparisons_total": ranked.comparisons_total,
+                "phase_comparisons": ranked.phase_comparisons,
                 "progress": 1.0,
                 "ranked_ids": ranked_ids,
                 "ranked_items": ranked_items_public,

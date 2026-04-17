@@ -22,6 +22,14 @@ class Settings:
     prepare_download_attempts: int
     #: Per-file decode_to_wav attempts (ffmpeg / librosa flakes).
     prepare_decode_attempts: int
+    #: Focus set size for refinement is derived from this Top-K target.
+    rank_top_k: int
+    #: Multiplier applied to the old merge-sort-style baseline budget.
+    rank_budget_multiplier: float
+    #: Nearby items compared during exploitation.
+    rank_neighbor_window: int
+    #: Max repeated comparisons kept for an uncertain pair.
+    rank_max_pair_repeats: int
 
 
 def load_settings() -> Settings:
@@ -62,6 +70,34 @@ def load_settings() -> Settings:
         prepare_decode_attempts = 3
     prepare_decode_attempts = max(1, min(prepare_decode_attempts, 10))
 
+    raw_top_k = os.environ.get("SPEECHJUDGE_RANK_TOP_K", "20").strip()
+    try:
+        rank_top_k = int(raw_top_k)
+    except ValueError:
+        rank_top_k = 20
+    rank_top_k = max(1, min(rank_top_k, 200))
+
+    raw_budget_mult = os.environ.get("SPEECHJUDGE_RANK_BUDGET_MULTIPLIER", "2.0").strip()
+    try:
+        rank_budget_multiplier = float(raw_budget_mult)
+    except ValueError:
+        rank_budget_multiplier = 2.0
+    rank_budget_multiplier = max(1.0, min(rank_budget_multiplier, 8.0))
+
+    raw_window = os.environ.get("SPEECHJUDGE_RANK_NEIGHBOR_WINDOW", "4").strip()
+    try:
+        rank_neighbor_window = int(raw_window)
+    except ValueError:
+        rank_neighbor_window = 4
+    rank_neighbor_window = max(1, min(rank_neighbor_window, 20))
+
+    raw_repeats = os.environ.get("SPEECHJUDGE_RANK_MAX_PAIR_REPEATS", "3").strip()
+    try:
+        rank_max_pair_repeats = int(raw_repeats)
+    except ValueError:
+        rank_max_pair_repeats = 3
+    rank_max_pair_repeats = max(1, min(rank_max_pair_repeats, 10))
+
     return Settings(
         jobs_state_dir=jobs_state_dir,
         job_files_root=job_files_root,
@@ -72,4 +108,8 @@ def load_settings() -> Settings:
         prepare_parallel=prepare_parallel,
         prepare_download_attempts=prepare_download_attempts,
         prepare_decode_attempts=prepare_decode_attempts,
+        rank_top_k=rank_top_k,
+        rank_budget_multiplier=rank_budget_multiplier,
+        rank_neighbor_window=rank_neighbor_window,
+        rank_max_pair_repeats=rank_max_pair_repeats,
     )

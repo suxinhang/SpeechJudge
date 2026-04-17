@@ -35,7 +35,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
         pairwise_parallel: int | None = Form(
             default=None,
             description=(
-                "Odd-even rank: max pairwise compares per batched GPU forward (1–32; 1=serial + infer lock). "
+                "Ranking phase: max pairwise compares per batched GPU forward (1–32; 1=serial + infer lock). "
                 "Omit to use server default from SPEECHJUDGE_PAIRWISE_PARALLEL."
             ),
         ),
