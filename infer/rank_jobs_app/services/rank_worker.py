@@ -106,68 +106,91 @@ async def prepare_job_inputs(
     target_text: str,
     urls: list[str],
     uploads: list[UploadFile] | None,
+    prepare_parallel: int,
 ) -> list[dict[str, Any]]:
+    workers = max(1, min(int(prepare_parallel), 32))
     await _update_job(
         store,
         job_id,
         {
             "status": "running",
             "phase": "prepare",
-            "message": "Downloading / saving inputs",
+            "message": f"Downloading / saving inputs (prepare_parallel={workers})",
+            "prepare_parallel": workers,
             "started_at": _utcnow(),
         },
     )
 
     items: list[dict[str, Any]] = []
     temp_paths: list[Path] = []
+    sem = asyncio.Semaphore(workers)
 
-    for idx, url in enumerate(urls):
-        stem = f"url_{idx:04d}"
-        src = await asyncio.to_thread(download_url_to_file, url, job_dir / "download", stem)
-        wav = await asyncio.to_thread(ensure_wav, src)
+    async def _prepare_one_url(idx: int, url: str) -> tuple[int, dict[str, Any], list[Path]]:
+        async with sem:
+            stem = f"url_{idx:04d}"
+            src = await asyncio.to_thread(
+                download_url_to_file, url, job_dir / "download", stem
+            )
+            wav = await asyncio.to_thread(ensure_wav, src)
+        extras: list[Path] = []
         if wav != src:
-            temp_paths.append(wav)
+            extras.append(wav)
         item_id = str(uuid.uuid4())
-        items.append(
-            {
-                "id": item_id,
-                "label": stem,
-                "source": "url",
-                "url": url,
-                "original_path": str(src),
-                "wav_path": str(wav),
-            }
+        row = {
+            "id": item_id,
+            "label": stem,
+            "source": "url",
+            "url": url,
+            "original_path": str(src),
+            "wav_path": str(wav),
+        }
+        return (idx, row, extras)
+
+    if urls:
+        url_results = await asyncio.gather(
+            *(_prepare_one_url(i, u) for i, u in enumerate(urls))
         )
+        for idx, row, extras in sorted(url_results, key=lambda t: t[0]):
+            items.append(row)
+            temp_paths.extend(extras)
 
     if uploads:
         up_dir = job_dir / "upload"
         up_dir.mkdir(parents=True, exist_ok=True)
-        for idx, up in enumerate(uploads):
-            raw_name = up.filename or f"upload_{idx:04d}"
-            safe = _safe_filename(Path(raw_name).name)
-            dest = up_dir / f"{idx:04d}_{safe}"
-            with dest.open("wb") as f:
-                while True:
-                    chunk = await up.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-            await up.close()
 
-            wav = await asyncio.to_thread(ensure_wav, dest)
+        async def _prepare_one_upload(idx: int, up: UploadFile) -> tuple[int, dict[str, Any], list[Path]]:
+            async with sem:
+                raw_name = up.filename or f"upload_{idx:04d}"
+                safe = _safe_filename(Path(raw_name).name)
+                dest = up_dir / f"{idx:04d}_{safe}"
+                with dest.open("wb") as f:
+                    while True:
+                        chunk = await up.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                await up.close()
+                wav = await asyncio.to_thread(ensure_wav, dest)
+            extras: list[Path] = []
             if wav != dest:
-                temp_paths.append(wav)
+                extras.append(wav)
             item_id = str(uuid.uuid4())
-            items.append(
-                {
-                    "id": item_id,
-                    "label": safe,
-                    "source": "upload",
-                    "url": None,
-                    "original_path": str(dest),
-                    "wav_path": str(wav),
-                }
-            )
+            row = {
+                "id": item_id,
+                "label": safe,
+                "source": "upload",
+                "url": None,
+                "original_path": str(dest),
+                "wav_path": str(wav),
+            }
+            return (idx, row, extras)
+
+        up_results = await asyncio.gather(
+            *(_prepare_one_upload(i, up) for i, up in enumerate(uploads))
+        )
+        for idx, row, extras in sorted(up_results, key=lambda t: t[0]):
+            items.append(row)
+            temp_paths.extend(extras)
 
     await _update_job(
         store,
@@ -239,6 +262,7 @@ async def run_rank_job(
     urls: list[str],
     uploads: list[UploadFile] | None,
     pairwise_parallel: int,
+    prepare_parallel: int,
 ) -> None:
     job_dir = settings.job_files_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +276,7 @@ async def run_rank_job(
             target_text=target_text,
             urls=urls,
             uploads=uploads,
+            prepare_parallel=prepare_parallel,
         )
 
         n = len(items)

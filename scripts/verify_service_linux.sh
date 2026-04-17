@@ -11,6 +11,7 @@
 #   SPEECHJUDGE_RANK_JOB_DIR    任务工作目录（默认 repo/data/rank_jobs）
 #   SPEECHJUDGE_RANK_JOBS_JSON_DIR  任务 JSON 目录（默认 $SPEECHJUDGE_RANK_JOB_DIR/_json_jobs）
 #   SPEECHJUDGE_PAIRWISE_PARALLEL   POST 未传 pairwise_parallel 时的默认并发数（1=串行并加锁）
+#   SPEECHJUDGE_PREPARE_PARALLEL    POST 未传 prepare_parallel 时，准备阶段 URL 下载/转码默认并发（1–32）
 
 set -euo pipefail
 

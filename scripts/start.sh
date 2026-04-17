@@ -15,8 +15,9 @@ cd /root/SpeechJudge/infer
 # ======================
 export SPEECHJUDGE_MODEL_PATH="/root/models/SpeechJudge-GRM"
 export SPEECHJUDGE_CUDA_DEVICE="0"
-# Default when POST /jobs/rank omits form field pairwise_parallel. Prefer setting per request in API.
+# Default when POST /jobs/rank omits form fields pairwise_parallel / prepare_parallel.
 # export SPEECHJUDGE_PAIRWISE_PARALLEL=5
+# export SPEECHJUDGE_PREPARE_PARALLEL=8
 
 # ======================
 # 3. 日志目录

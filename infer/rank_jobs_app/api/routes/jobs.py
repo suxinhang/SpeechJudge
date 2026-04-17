@@ -39,6 +39,13 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 "Omit to use server default from SPEECHJUDGE_PAIRWISE_PARALLEL."
             ),
         ),
+        prepare_parallel: int | None = Form(
+            default=None,
+            description=(
+                "Prepare phase: max concurrent URL downloads / upload transcodes (1–32). "
+                "Omit to use server default from SPEECHJUDGE_PREPARE_PARALLEL."
+            ),
+        ),
     ) -> CreateJobResponse:
         urls: list[str] = []
         if urls_json:
@@ -66,6 +73,16 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 )
         pp = max(1, min(pp, 32))
 
+        prep = int(getattr(settings, "prepare_parallel", 8))
+        if prepare_parallel is not None:
+            prep = int(prepare_parallel)
+            if prep < 1 or prep > 32:
+                raise HTTPException(
+                    status_code=400,
+                    detail="prepare_parallel must be between 1 and 32",
+                )
+        prep = max(1, min(prep, 32))
+
         doc: dict[str, Any] = {
             "status": "queued",
             "phase": "queued",
@@ -77,6 +94,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             "n_urls": len(urls),
             "n_uploads": len(audio_files or []),
             "pairwise_parallel": pp,
+            "prepare_parallel": prep,
         }
         try:
             job_id = await store.insert_job(doc)
@@ -95,6 +113,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             urls=urls,
             uploads=audio_files,
             pairwise_parallel=pp,
+            prepare_parallel=prep,
         )
         return CreateJobResponse(job_id=job_id)
 
