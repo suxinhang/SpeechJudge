@@ -14,7 +14,7 @@ class Settings:
     model_path: str
     cuda_device_raw: str | None
     thinker: bool
-    #: How many pairwise model calls may run at once within one odd-even phase (1 = serial + infer lock).
+    #: Max pairwise compares per batched GPU forward in odd-even phases (1 = serial + infer lock).
     pairwise_parallel: int
     #: Max concurrent URL downloads + wav transcodes during job prepare (1 = fully serial).
     prepare_parallel: int

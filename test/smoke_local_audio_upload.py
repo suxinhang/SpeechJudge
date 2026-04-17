@@ -264,7 +264,7 @@ def main() -> int:
         type=int,
         default=None,
         metavar="N",
-        help="POST form pairwise_parallel (1–32); omit to use server default",
+        help="POST form pairwise_parallel (1–32): max pairs per batched GPU forward; omit for server default",
     )
     args = parser.parse_args()
     if args.pairwise_parallel is not None and not (1 <= int(args.pairwise_parallel) <= 32):

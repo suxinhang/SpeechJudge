@@ -16,6 +16,7 @@ cd /root/SpeechJudge/infer
 export SPEECHJUDGE_MODEL_PATH="/root/models/SpeechJudge-GRM"
 export SPEECHJUDGE_CUDA_DEVICE="0"
 # Default when POST /jobs/rank omits form fields pairwise_parallel / prepare_parallel.
+# pairwise_parallel = max pairs per batched GPU forward during odd-even sort (not threads).
 # export SPEECHJUDGE_PAIRWISE_PARALLEL=5
 # export SPEECHJUDGE_PREPARE_PARALLEL=8
 # export SPEECHJUDGE_PREPARE_DOWNLOAD_ATTEMPTS=5

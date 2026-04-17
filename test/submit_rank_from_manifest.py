@@ -101,7 +101,7 @@ def main() -> int:
         type=int,
         default=None,
         metavar="N",
-        help="POST form pairwise_parallel (1–32); omit for server default",
+        help="POST form pairwise_parallel (1–32): max pairs per batched GPU forward; omit for default",
     )
     p.add_argument(
         "--output",

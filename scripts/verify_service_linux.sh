@@ -10,7 +10,7 @@
 #   SPEECHJUDGE_MODEL_PATH      模型目录；未设则仅检查常见默认路径并告警
 #   SPEECHJUDGE_RANK_JOB_DIR    任务工作目录（默认 repo/data/rank_jobs）
 #   SPEECHJUDGE_RANK_JOBS_JSON_DIR  任务 JSON 目录（默认 $SPEECHJUDGE_RANK_JOB_DIR/_json_jobs）
-#   SPEECHJUDGE_PAIRWISE_PARALLEL   POST 未传 pairwise_parallel 时的默认并发数（1=串行并加锁）
+#   SPEECHJUDGE_PAIRWISE_PARALLEL   POST 未传 pairwise_parallel 时，单次 GPU 批推理最多打包几对比较（1=串行并加锁）
 #   SPEECHJUDGE_PREPARE_PARALLEL    POST 未传 prepare_parallel 时，准备阶段 URL 下载/转码默认并发（1–32）
 #   SPEECHJUDGE_PREPARE_DOWNLOAD_ATTEMPTS  单 URL HTTP 下载最大尝试次数（含 5xx/429 与网络类重试，默认 5，上限 15）
 #   SPEECHJUDGE_PREPARE_DECODE_ATTEMPTS    单文件 ffmpeg/librosa 转 wav 最大尝试次数（默认 3，上限 10）

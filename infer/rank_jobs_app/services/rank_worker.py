@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import contextlib
 import functools
 import shutil
@@ -18,7 +17,7 @@ from fastapi import UploadFile
 from ..db.json_jobs import JsonJobStore
 from .audio_io import download_url_to_file, ensure_wav
 from .model_runtime import MODEL
-from .pairwise import pairwise_preference
+from .pairwise import pairwise_preference, pairwise_preferences_batched
 
 
 def _utcnow() -> datetime:
@@ -223,30 +222,22 @@ def _odd_even_sort_sync(
     *,
     items: list[dict[str, Any]],
     compare_pair: Callable[[str, str], int],
-    parallel: int,
+    compare_snap_batch: Callable[[list[tuple[int, str, str]]], dict[int, int]] | None,
 ) -> list[dict[str, Any]]:
-    """Odd-even transposition sort; within each phase, disjoint pairs compare in parallel."""
+    """Odd-even transposition sort; batched GPU forwards when ``compare_snap_batch`` is set."""
     arr = list(items)
     n = len(arr)
     if n <= 1:
         return arr
-    workers = max(1, min(int(parallel), 32))
 
     def _run_phase_batch(snap: list[tuple[int, str, str]]) -> dict[int, int]:
         if not snap:
             return {}
-        use = min(workers, len(snap))
-        if use <= 1:
-            prefs: dict[int, int] = {}
-            for j, left, right in snap:
-                prefs[j] = compare_pair(left, right)
-            return prefs
-        prefs = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=use) as ex:
-            fut_to_j = {ex.submit(compare_pair, left, right): j for j, left, right in snap}
-            for fut in concurrent.futures.as_completed(fut_to_j):
-                j = fut_to_j[fut]
-                prefs[j] = fut.result()
+        if compare_snap_batch is not None:
+            return compare_snap_batch(snap)
+        prefs: dict[int, int] = {}
+        for j, left, right in snap:
+            prefs[j] = compare_pair(left, right)
         return prefs
 
     while True:
@@ -317,7 +308,10 @@ async def run_rank_job(
             job_id,
             {
                 "phase": "sort",
-                "message": f"Odd-even sort (pairwise_parallel={parallel})",
+                "message": (
+                    f"Odd-even sort (pairwise_parallel={parallel}, "
+                    f"batched GPU forward when parallel>1)"
+                ),
                 "n_items": n,
                 "comparisons_total": total_cmp,
                 "comparisons_done": 0,
@@ -332,31 +326,61 @@ async def run_rank_job(
 
         def compare_pair(left_wav: str, right_wav: str) -> int:
             nonlocal done
-            if parallel <= 1:
-                with MODEL.infer_lock(), MODEL.context():
-                    pref = pairwise_preference(
-                        processor,
-                        model,
-                        is_omni=not settings.thinker,
-                        max_new_tokens=None,
-                        target_text=target_text,
-                        left_wav=left_wav,
-                        right_wav=right_wav,
-                    )
-            else:
-                with MODEL.context():
-                    pref = pairwise_preference(
-                        processor,
-                        model,
-                        is_omni=not settings.thinker,
-                        max_new_tokens=None,
-                        target_text=target_text,
-                        left_wav=left_wav,
-                        right_wav=right_wav,
-                    )
+            with MODEL.infer_lock(), MODEL.context():
+                pref = pairwise_preference(
+                    processor,
+                    model,
+                    is_omni=not settings.thinker,
+                    max_new_tokens=None,
+                    target_text=target_text,
+                    left_wav=left_wav,
+                    right_wav=right_wav,
+                )
             with done_lock:
                 done += 1
             return pref
+
+        def compare_snap_batch(snap: list[tuple[int, str, str]]) -> dict[int, int]:
+            """Chunk disjoint pairs into batched ``generate`` calls (true GPU batching)."""
+            prefs_out: dict[int, int] = {}
+            bs = max(1, min(int(parallel), 32))
+            for off in range(0, len(snap), bs):
+                chunk = snap[off : off + bs]
+                indices = [t[0] for t in chunk]
+                pairs = [(t[1], t[2]) for t in chunk]
+                try:
+                    with MODEL.context():
+                        prefs = pairwise_preferences_batched(
+                            processor,
+                            model,
+                            is_omni=not settings.thinker,
+                            max_new_tokens=None,
+                            target_text=target_text,
+                            pairs=pairs,
+                        )
+                except RuntimeError as exc:
+                    if "out of memory" not in str(exc).lower():
+                        raise
+                    prefs = []
+                    for lf, rt in pairs:
+                        with MODEL.infer_lock(), MODEL.context():
+                            prefs.append(
+                                pairwise_preference(
+                                    processor,
+                                    model,
+                                    is_omni=not settings.thinker,
+                                    max_new_tokens=None,
+                                    target_text=target_text,
+                                    left_wav=lf,
+                                    right_wav=rt,
+                                )
+                            )
+                for k, j in enumerate(indices):
+                    prefs_out[j] = prefs[k]
+            with done_lock:
+                nonlocal done
+                done += len(snap)
+            return prefs_out
 
         last_report = {"t": 0.0}
 
@@ -388,7 +412,7 @@ async def run_rank_job(
                 return _odd_even_sort_sync(
                     items=items,
                     compare_pair=compare_pair,
-                    parallel=parallel,
+                    compare_snap_batch=compare_snap_batch if parallel > 1 else None,
                 )
 
             ranked = await asyncio.to_thread(runner)
