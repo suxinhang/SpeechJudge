@@ -238,6 +238,7 @@ async def run_rank_job(
     target_text: str,
     urls: list[str],
     uploads: list[UploadFile] | None,
+    pairwise_parallel: int,
 ) -> None:
     job_dir = settings.job_files_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -268,7 +269,7 @@ async def run_rank_job(
             return
 
         total_cmp = _bubble_sort_total_comparisons(n)
-        parallel = int(getattr(settings, "pairwise_parallel", 5))
+        parallel = max(1, min(int(pairwise_parallel), 32))
         await _update_job(
             store,
             job_id,

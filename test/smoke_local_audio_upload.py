@@ -27,7 +27,7 @@ from typing import Iterable
 import requests
 
 
-DEFAULT_BASE_URL = "https://since-supporting-edwards-comments.trycloudflare.com/"
+DEFAULT_BASE_URL = "https://madonna-perspectives-ctrl-illustration.trycloudflare.com"
 DEFAULT_DATA_DIR = r"D:\Downloads\泰语"
 DEFAULT_TARGET_TEXT = "ตั้งแต่อายุยังน้อย คิโยซากิและไมค์ เพื่อนของเขามีความปรารถนาอย่างแรงกล้าที่จะกลายเป็นคนร่ำรวย อย่างไรก็ตาม ในตอนแรกพวกเขาไม่รู้ว่าจะทำอย่างไรจึงจะบรรลุเป้าหมายนี้ได้ เมื่อพวกเขาไปขอคำแนะนำจากพ่อของตนเอง พวกเขากลับได้รับคำตอบที่แตกต่างกันอย่างสิ้นเชิง พ่อที่ยากจนของคิโยซากิซึ่งมีการศึกษาดีแต่มีปัญหาทางการเงิน แนะนำให้พวกเขาตั้งใจเรียนและหางานที่มั่นคงทำ แม้คำแนะนำแบบดั้งเดิมนี้จะมาจากความหวังดี แต่มันมักทำให้ผู้คนติดอยู่ในวงจรของการทำงานหนักเพื่อเงิน โดยไม่สามารถสร้างความมั่งคั่งที่แท้จริงได้พ่อที่ยากจนของคิโยซากิเป็นตัวแทนของแนวคิดแบบดั้งเดิมที่ผู้คนจำนวนมากยังคงยึดถือมาจนถึงทุกวันนี้ แนวคิดนี้มักเกิดจากความกลัวต่อความไม่มั่นคงทางการเงิน และความเชื่อว่าการมีการศึกษาที่ดีและงานที่มั่นคงคือกุญแจสู่ความสำเร็จ อย่างไรก็ตาม คิโยซากิอธิบายว่าแนวทางนี้อาจทำให้ผู้คนติดอยู่ในสิ่งที่เรียกว่า “วงจรหนูวิ่ง” หรือ rat race ซึ่งหมายถึงการทำงานอย่างหนักเพื่อรับเงินเดือน แต่เงินจำนวนมากกลับถูกใช้ไปกับภาษี ค่าบิล และค่าใช้จ่ายต่าง ๆ ในชีวิตประจำวัน ดังนั้น แม้ว่าพวกเขาอาจหลีกเลี่ยงความยากจนได้ แต่ก็ยังไม่สามารถสะสมความมั่งคั่งที่แท้จริงได้เลย"
 
@@ -90,18 +90,28 @@ def load_urls_from_file(path: Path) -> list[str]:
     return out
 
 
-def submit_job_urls(base_url: str, target_text: str, urls: list[str], timeout: int) -> str:
+def submit_job_urls(
+    base_url: str,
+    target_text: str,
+    urls: list[str],
+    timeout: int,
+    *,
+    pairwise_parallel: int | None = None,
+) -> str:
     body = json.dumps(urls, ensure_ascii=False)
     print(
         f"[info] POST /jobs/rank with urls_json only ({len(urls)} URLs, ~{len(body)} bytes form payload)…",
         flush=True,
     )
+    data: dict[str, str] = {
+        "target_text": target_text,
+        "urls_json": body,
+    }
+    if pairwise_parallel is not None:
+        data["pairwise_parallel"] = str(int(pairwise_parallel))
     resp = requests.post(
         f"{base_url.rstrip('/')}/jobs/rank",
-        data={
-            "target_text": target_text,
-            "urls_json": body,
-        },
+        data=data,
         timeout=timeout,
     )
     if resp.status_code >= 400:
@@ -120,6 +130,7 @@ def submit_job(
     timeout: int,
     *,
     upload_heartbeat_sec: float = 30.0,
+    pairwise_parallel: int | None = None,
 ) -> str:
     total_bytes = sum(p.stat().st_size for p in files)
     mib = total_bytes / (1024 * 1024)
@@ -151,10 +162,13 @@ def submit_job(
 
         hb = threading.Thread(target=_heartbeat, name="upload-heartbeat", daemon=True)
         hb.start()
+        post_data: dict[str, str] = {"target_text": target_text}
+        if pairwise_parallel is not None:
+            post_data["pairwise_parallel"] = str(int(pairwise_parallel))
         try:
             resp = requests.post(
                 f"{base_url.rstrip('/')}/jobs/rank",
-                data={"target_text": target_text},
+                data=post_data,
                 files=multipart,
                 timeout=timeout,
             )
@@ -240,7 +254,16 @@ def main() -> int:
         default=30.0,
         help="Print a line every N seconds while POST body is uploading (no per-chunk API in requests)",
     )
+    parser.add_argument(
+        "--pairwise-parallel",
+        type=int,
+        default=None,
+        metavar="N",
+        help="POST form pairwise_parallel (1–32); omit to use server default",
+    )
     args = parser.parse_args()
+    if args.pairwise_parallel is not None and not (1 <= int(args.pairwise_parallel) <= 32):
+        parser.error("--pairwise-parallel must be between 1 and 32")
 
     if args.urls_file is not None:
         try:
@@ -258,7 +281,13 @@ def main() -> int:
             print(f"  {i}. {u}", flush=True)
         if len(urls) > 15:
             print(f"  ... ({len(urls) - 15} more)", flush=True)
-        job_id = submit_job_urls(args.base_url, args.target_text, urls, args.submit_timeout)
+        job_id = submit_job_urls(
+            args.base_url,
+            args.target_text,
+            urls,
+            args.submit_timeout,
+            pairwise_parallel=args.pairwise_parallel,
+        )
     else:
         data_dir = Path(args.data_dir)
         all_audios = collect_audios(data_dir)
@@ -290,6 +319,7 @@ def main() -> int:
             chosen,
             args.submit_timeout,
             upload_heartbeat_sec=args.upload_heartbeat_sec,
+            pairwise_parallel=args.pairwise_parallel,
         )
     print(f"[info] submitted job_id={job_id}", flush=True)
     result = poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval)

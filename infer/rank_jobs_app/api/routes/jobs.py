@@ -32,6 +32,13 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             description='JSON array of strings, e.g. ["https://a/a.mp3","https://b/b.wav"]',
         ),
         audio_files: list[UploadFile] | None = File(default=None),
+        pairwise_parallel: int | None = Form(
+            default=None,
+            description=(
+                "Odd-even rank: max concurrent pairwise compares per phase (1–32; 1=serial + infer lock). "
+                "Omit to use server default from SPEECHJUDGE_PAIRWISE_PARALLEL."
+            ),
+        ),
     ) -> CreateJobResponse:
         urls: list[str] = []
         if urls_json:
@@ -49,6 +56,16 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 detail="Provide urls_json and/or audio_files (multipart uploads).",
             )
 
+        pp = int(getattr(settings, "pairwise_parallel", 5))
+        if pairwise_parallel is not None:
+            pp = int(pairwise_parallel)
+            if pp < 1 or pp > 32:
+                raise HTTPException(
+                    status_code=400,
+                    detail="pairwise_parallel must be between 1 and 32",
+                )
+        pp = max(1, min(pp, 32))
+
         doc: dict[str, Any] = {
             "status": "queued",
             "phase": "queued",
@@ -59,6 +76,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             "urls": urls,
             "n_urls": len(urls),
             "n_uploads": len(audio_files or []),
+            "pairwise_parallel": pp,
         }
         try:
             job_id = await store.insert_job(doc)
@@ -76,6 +94,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             target_text=target_text,
             urls=urls,
             uploads=audio_files,
+            pairwise_parallel=pp,
         )
         return CreateJobResponse(job_id=job_id)
 

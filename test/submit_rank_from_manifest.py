@@ -35,6 +35,8 @@ def _submit_multipart(
     target_text: str,
     paths: list[tuple[str, Path]],
     submit_timeout: int,
+    *,
+    pairwise_parallel: int | None = None,
 ) -> str:
     multipart: list[tuple[str, tuple[str, Any, str]]] = []
     opened: list[Any] = []
@@ -43,9 +45,12 @@ def _submit_multipart(
             f = p.open("rb")
             opened.append(f)
             multipart.append(("audio_files", (upload_name, f, "application/octet-stream")))
+        data: dict[str, str] = {"target_text": target_text}
+        if pairwise_parallel is not None:
+            data["pairwise_parallel"] = str(int(pairwise_parallel))
         resp = requests.post(
             f"{base_url.rstrip('/')}/jobs/rank",
-            data={"target_text": target_text},
+            data=data,
             files=multipart,
             timeout=submit_timeout,
         )
@@ -92,11 +97,20 @@ def main() -> int:
     p.add_argument("--job-timeout", type=int, default=28800)
     p.add_argument("--poll-interval", type=float, default=5.0)
     p.add_argument(
+        "--pairwise-parallel",
+        type=int,
+        default=None,
+        metavar="N",
+        help="POST form pairwise_parallel (1–32); omit for server default",
+    )
+    p.add_argument(
         "--output",
         type=Path,
         default=Path(__file__).resolve().parent / "testd1_rank_result.json",
     )
     args = p.parse_args()
+    if args.pairwise_parallel is not None and not (1 <= int(args.pairwise_parallel) <= 32):
+        p.error("--pairwise-parallel must be between 1 and 32")
 
     raw = load_manifest(args.manifest)
     target_text = str(raw["target_text"])
@@ -122,7 +136,13 @@ def main() -> int:
     est = raw.get("estimated_pairwise_comparisons", n * (n - 1) // 2 if n > 1 else 0)
     print(f"[info] manifest items={n}, estimated comparisons={est}")
 
-    job_id = _submit_multipart(args.base_url, target_text, paths, args.submit_timeout)
+    job_id = _submit_multipart(
+        args.base_url,
+        target_text,
+        paths,
+        args.submit_timeout,
+        pairwise_parallel=args.pairwise_parallel,
+    )
     print(f"[info] job_id={job_id}")
     result = _poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval)
     args.output.parent.mkdir(parents=True, exist_ok=True)
