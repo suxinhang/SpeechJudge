@@ -327,12 +327,14 @@ async def run_rank_job(
                 if now - last_report["t"] < 1.0:
                     continue
                 last_report["t"] = now
+                with done_lock:
+                    d = done
                 await _update_job(
                     store,
                     job_id,
                     {
-                        "comparisons_done": done,
-                        "progress": (done / total_cmp) if total_cmp else 1.0,
+                        "comparisons_done": d,
+                        "progress": (d / total_cmp) if total_cmp else 1.0,
                     },
                 )
 
