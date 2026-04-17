@@ -27,7 +27,7 @@ from typing import Iterable
 import requests
 
 
-DEFAULT_BASE_URL = "https://madonna-perspectives-ctrl-illustration.trycloudflare.com"
+DEFAULT_BASE_URL = "https://successfully-makeup-constitute-abs.trycloudflare.com/"
 DEFAULT_DATA_DIR = r"D:\Downloads\泰语"
 DEFAULT_TARGET_TEXT = "ตั้งแต่อายุยังน้อย คิโยซากิและไมค์ เพื่อนของเขามีความปรารถนาอย่างแรงกล้าที่จะกลายเป็นคนร่ำรวย อย่างไรก็ตาม ในตอนแรกพวกเขาไม่รู้ว่าจะทำอย่างไรจึงจะบรรลุเป้าหมายนี้ได้ เมื่อพวกเขาไปขอคำแนะนำจากพ่อของตนเอง พวกเขากลับได้รับคำตอบที่แตกต่างกันอย่างสิ้นเชิง พ่อที่ยากจนของคิโยซากิซึ่งมีการศึกษาดีแต่มีปัญหาทางการเงิน แนะนำให้พวกเขาตั้งใจเรียนและหางานที่มั่นคงทำ แม้คำแนะนำแบบดั้งเดิมนี้จะมาจากความหวังดี แต่มันมักทำให้ผู้คนติดอยู่ในวงจรของการทำงานหนักเพื่อเงิน โดยไม่สามารถสร้างความมั่งคั่งที่แท้จริงได้พ่อที่ยากจนของคิโยซากิเป็นตัวแทนของแนวคิดแบบดั้งเดิมที่ผู้คนจำนวนมากยังคงยึดถือมาจนถึงทุกวันนี้ แนวคิดนี้มักเกิดจากความกลัวต่อความไม่มั่นคงทางการเงิน และความเชื่อว่าการมีการศึกษาที่ดีและงานที่มั่นคงคือกุญแจสู่ความสำเร็จ อย่างไรก็ตาม คิโยซากิอธิบายว่าแนวทางนี้อาจทำให้ผู้คนติดอยู่ในสิ่งที่เรียกว่า “วงจรหนูวิ่ง” หรือ rat race ซึ่งหมายถึงการทำงานอย่างหนักเพื่อรับเงินเดือน แต่เงินจำนวนมากกลับถูกใช้ไปกับภาษี ค่าบิล และค่าใช้จ่ายต่าง ๆ ในชีวิตประจำวัน ดังนั้น แม้ว่าพวกเขาอาจหลีกเลี่ยงความยากจนได้ แต่ก็ยังไม่สามารถสะสมความมั่งคั่งที่แท้จริงได้เลย"
 
@@ -203,7 +203,12 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
         status = str(last.get("status", ""))
         phase = str(last.get("phase", ""))
         progress = float(last.get("progress", 0.0) or 0.0)
-        print(f"[poll] status={status} phase={phase} progress={progress:.3f}", flush=True)
+        done_c = last.get("comparisons_done")
+        tot_c = last.get("comparisons_total")
+        cmp_part = ""
+        if isinstance(done_c, int) and isinstance(tot_c, int) and tot_c > 0:
+            cmp_part = f" cmp={done_c}/{tot_c}"
+        print(f"[poll] status={status} phase={phase} progress={progress:.3f}{cmp_part}", flush=True)
         if status in {"succeeded", "failed"}:
             return last
         time.sleep(interval)
@@ -274,6 +279,13 @@ def main() -> int:
         n = len(urls)
         est = n * (n - 1) // 2 if n > 1 else 0
         print(f"[info] mode=urls-file ({args.urls_file}), {n} URLs, ~{est} pairwise comparisons on server", flush=True)
+        if n > 40:
+            print(
+                "[info] sort phase uses odd-even bubble (~n²/2 model calls). "
+                "--pairwise-parallel>1 runs several compares in threads, but one GPU often gains little vs serial; "
+                "expect wall-clock roughly (comparisons × time_per_call) / limited parallelism.",
+                flush=True,
+            )
         if n == 0:
             print("[error] no URLs loaded (need lines starting with http:// or https://)", file=sys.stderr)
             return 1
