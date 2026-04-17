@@ -90,12 +90,18 @@ if [[ -z "${CLOUDFLARED_BIN:-}" ]]; then
   fi
 fi
 
+# 已解析到文件但无执行位（镜像里常见 644）：自动 chmod 一次再继续
+if [[ -n "${CLOUDFLARED_BIN:-}" ]] && [[ -f "$CLOUDFLARED_BIN" ]] && [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+  if chmod +x "$CLOUDFLARED_BIN" 2>/dev/null && [[ -x "$CLOUDFLARED_BIN" ]]; then
+    echo "[INFO] chmod +x cloudflared: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+  fi
+fi
+
 # 未找到或未可执行：Linux 下尝试从 GitHub 下载官方二进制到 /root/bin（需 curl 或 wget）。
 # 离线或不想自动下载时: export SKIP_CLOUDFLARED_DOWNLOAD=1
 if [[ -z "$CLOUDFLARED_BIN" ]] || [[ ! -x "$CLOUDFLARED_BIN" ]]; then
   if [[ -n "$CLOUDFLARED_BIN" ]] && [[ ! -x "$CLOUDFLARED_BIN" ]]; then
-    echo "[WARN] cloudflared exists but is not executable: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
-    echo "[WARN] try: chmod +x \"$CLOUDFLARED_BIN\"" | tee -a "$LOG_FILE"
+    echo "[WARN] cloudflared still not executable after chmod attempt: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
   fi
   if [[ "${SKIP_CLOUDFLARED_DOWNLOAD:-}" != "1" ]] && [[ "$(uname -s)" == "Linux" ]]; then
     _cf_arch=""
@@ -108,13 +114,18 @@ if [[ -z "$CLOUDFLARED_BIN" ]] || [[ ! -x "$CLOUDFLARED_BIN" ]]; then
       mkdir -p /root/bin
       _cf_tmp="/root/bin/cloudflared.tmp.$$"
       _cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${_cf_arch}"
+      _cf_dl=1
       set +e
-      if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$_cf_url" -o "$_cf_tmp"
-      else
-        wget -q "$_cf_url" -O "$_cf_tmp"
-      fi
-      _cf_dl=$?
+      for _try in 1 2 3; do
+        rm -f "$_cf_tmp"
+        if command -v curl >/dev/null 2>&1; then
+          curl -fsSL "$_cf_url" -o "$_cf_tmp" 2>/dev/null && [[ -s "$_cf_tmp" ]] && _cf_dl=0 && break
+        fi
+        if command -v wget >/dev/null 2>&1; then
+          wget -q "$_cf_url" -O "$_cf_tmp" 2>/dev/null && [[ -s "$_cf_tmp" ]] && _cf_dl=0 && break
+        fi
+        [[ "$_try" -lt 3 ]] && sleep 4
+      done
       set -e
       if [[ "$_cf_dl" -eq 0 ]] && [[ -s "$_cf_tmp" ]]; then
         chmod +x "$_cf_tmp"
@@ -123,7 +134,8 @@ if [[ -z "$CLOUDFLARED_BIN" ]] || [[ ! -x "$CLOUDFLARED_BIN" ]]; then
         echo "[SUCCESS] installed cloudflared at $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
       else
         rm -f "$_cf_tmp"
-        echo "[WARN] cloudflared auto-download failed (network or arch?)." | tee -a "$LOG_FILE"
+        echo "[WARN] cloudflared auto-download failed after retries (TLS/proxy/GitHub?)." | tee -a "$LOG_FILE"
+        echo "[HINT] Fix /usr/local/bin/cloudflared permissions, or copy binary in via scp; see docs URL below." | tee -a "$LOG_FILE"
       fi
     elif [[ -z "$_cf_arch" ]]; then
       echo "[WARN] unsupported machine for auto-download: $(uname -m); install cloudflared manually." | tee -a "$LOG_FILE"
