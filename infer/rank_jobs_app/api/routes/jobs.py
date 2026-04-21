@@ -39,6 +39,13 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 "Omit to use server default from SPEECHJUDGE_PAIRWISE_PARALLEL."
             ),
         ),
+        pairwise_votes_per_pair: int | None = Form(
+            default=None,
+            description=(
+                "Number of repeated model votes for each logical audio pair (1 or 3). "
+                "Omit to use server default from SPEECHJUDGE_PAIRWISE_VOTES_PER_PAIR."
+            ),
+        ),
         prepare_parallel: int | None = Form(
             default=None,
             description=(
@@ -73,6 +80,16 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 )
         pp = max(1, min(pp, 32))
 
+        pair_votes = int(getattr(settings, "pairwise_votes_per_pair", 3))
+        if pairwise_votes_per_pair is not None:
+            pair_votes = int(pairwise_votes_per_pair)
+            if pair_votes not in {1, 3}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="pairwise_votes_per_pair must be either 1 or 3",
+                )
+        pair_votes = 1 if pair_votes == 1 else 3
+
         prep = int(getattr(settings, "prepare_parallel", 8))
         if prepare_parallel is not None:
             prep = int(prepare_parallel)
@@ -97,6 +114,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             "n_urls": len(urls),
             "n_uploads": len(audio_files or []),
             "pairwise_parallel": pp,
+            "pairwise_votes_per_pair": pair_votes,
             "prepare_parallel": prep,
             "prepare_download_attempts": prep_dl,
             "prepare_decode_attempts": prep_dec,
@@ -118,6 +136,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             urls=urls,
             uploads=audio_files,
             pairwise_parallel=pp,
+            pairwise_votes_per_pair=pair_votes,
             prepare_parallel=prep,
             prepare_download_attempts=prep_dl,
             prepare_decode_attempts=prep_dec,

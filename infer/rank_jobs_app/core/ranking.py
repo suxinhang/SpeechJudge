@@ -111,6 +111,47 @@ class RankingResult:
     phase_comparisons: dict[str, int]
 
 
+def majority_vote(votes: list[int]) -> int:
+    positive = sum(1 for vote in votes if vote > 0)
+    negative = sum(1 for vote in votes if vote < 0)
+    if positive > negative:
+        return 1
+    if negative > positive:
+        return -1
+    return 0
+
+
+def collapse_pairwise_votes(votes: list[int], votes_per_pair: int) -> list[int]:
+    if votes_per_pair <= 1:
+        return list(votes)
+    if len(votes) % votes_per_pair != 0:
+        raise ValueError("votes length must be divisible by votes_per_pair")
+    collapsed: list[int] = []
+    for idx in range(0, len(votes), votes_per_pair):
+        collapsed.append(majority_vote(votes[idx : idx + votes_per_pair]))
+    return collapsed
+
+
+def collapse_pairwise_votes_adaptive(first_two_votes: list[int], third_votes: list[int]) -> list[int]:
+    if len(first_two_votes) % 2 != 0:
+        raise ValueError("first_two_votes length must be divisible by 2")
+    resolved: list[int] = []
+    third_idx = 0
+    for idx in range(0, len(first_two_votes), 2):
+        vote_a = first_two_votes[idx]
+        vote_b = first_two_votes[idx + 1]
+        if vote_a == vote_b:
+            resolved.append(vote_a)
+            continue
+        if third_idx >= len(third_votes):
+            raise ValueError("not enough third_votes to break ties")
+        resolved.append(majority_vote([vote_a, vote_b, third_votes[third_idx]]))
+        third_idx += 1
+    if third_idx != len(third_votes):
+        raise ValueError("unused third_votes remain after resolving ties")
+    return resolved
+
+
 def max_comparison_budget(n_items: int, config: RankingConfig) -> int:
     if n_items <= 1:
         return 0

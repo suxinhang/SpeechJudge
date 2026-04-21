@@ -23,6 +23,8 @@ from ..core.ranking import (
     PHASE_TOP_K,
     RankingConfig,
     RankingItem,
+    collapse_pairwise_votes_adaptive,
+    collapse_pairwise_votes,
     estimate_total_budget,
     phase_budgets,
 )
@@ -227,9 +229,11 @@ async def prepare_job_inputs(
     return items
 
 
-def _phase_message(phase: str, *, top_k: int) -> str:
+def _phase_message(phase: str, *, top_k: int, pair_votes_per_pair: int) -> str:
     if phase == PHASE_FULL:
-        return "Full compare: compare every unique pair once"
+        if pair_votes_per_pair <= 1:
+            return "Full compare: compare every unique pair once"
+        return "Full compare: adaptive 2-of-3 voting per pair"
     if phase == PHASE_EXPLORE:
         return "Exploration: broad pair coverage"
     if phase == PHASE_EXPLOIT:
@@ -250,6 +254,7 @@ async def run_rank_job(
     urls: list[str],
     uploads: list[UploadFile] | None,
     pairwise_parallel: int,
+    pairwise_votes_per_pair: int,
     prepare_parallel: int,
     prepare_download_attempts: int,
     prepare_decode_attempts: int,
@@ -286,6 +291,7 @@ async def run_rank_job(
             return
 
         parallel = max(1, min(int(pairwise_parallel), 32))
+        pair_votes = 1 if int(pairwise_votes_per_pair) == 1 else 3
         rank_config = RankingConfig(
             algorithm=str(getattr(settings, "rank_algorithm", ALGORITHM_FULL_PAIRWISE)),
             top_k=min(max(1, int(getattr(settings, "rank_top_k", 20))), n),
@@ -293,11 +299,28 @@ async def run_rank_job(
             neighbor_window=int(getattr(settings, "rank_neighbor_window", 4)),
             max_pair_repeats=int(getattr(settings, "rank_max_pair_repeats", 3)),
         )
-        total_cmp = estimate_total_budget(n, rank_config)
+        logical_total_cmp = estimate_total_budget(n, rank_config)
+        min_total_cmp = logical_total_cmp if pair_votes <= 1 else logical_total_cmp * 2
+        total_cmp = logical_total_cmp if pair_votes <= 1 else logical_total_cmp * 3
         strategy_message = (
-            f"Full pairwise ranking ({total_cmp} unique comparisons)"
+            (
+                f"Full pairwise ranking ({logical_total_cmp} pairs x 1 vote = {total_cmp} model comparisons)"
+                if pair_votes <= 1
+                else (
+                    f"Full pairwise ranking ({logical_total_cmp} pairs, adaptive 2-of-3 voting, "
+                    f"{min_total_cmp}-{total_cmp} model comparisons)"
+                )
+            )
             if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
-            else f"Phased Elo ranking (estimated comparisons<={total_cmp})"
+            else (
+                f"Phased Elo ranking (estimated logical comparisons<={logical_total_cmp}, votes per pair=1, "
+                f"model comparisons<={total_cmp})"
+                if pair_votes <= 1
+                else (
+                    f"Phased Elo ranking (estimated logical comparisons<={logical_total_cmp}, adaptive 2-of-3 voting, "
+                    f"model comparisons<={min_total_cmp}-{total_cmp})"
+                )
+            )
         )
         await _update_job(
             store,
@@ -310,8 +333,10 @@ async def run_rank_job(
                 "comparisons_done": 0,
                 "progress": 0.0,
                 "pairwise_parallel": parallel,
+                "pairwise_votes_per_pair": pair_votes,
                 "ranking_strategy": {
                     "algorithm": rank_config.algorithm,
+                    "pair_votes_per_pair": pair_votes,
                     "top_k": rank_config.top_k,
                     "budget_multiplier": rank_config.budget_multiplier,
                     "neighbor_window": rank_config.neighbor_window,
@@ -342,25 +367,70 @@ async def run_rank_job(
             for it in items
         ]
         engine = RankingEngine(rank_config)
+        actual_counts = {phase: 0 for phase in phase_plan}
+        actual_item_counts = {item.id: 0 for item in ranking_items}
 
         def compare_batch(batch: list[tuple[RankingItem, RankingItem]]) -> list[int]:
             wav_pairs = [(left.wav_path, right.wav_path) for left, right in batch]
+            votes_used_per_pair: list[int]
             with MODEL.infer_lock(), MODEL.context():
-                return pairwise_preferences_batched(
-                    processor,
-                    model,
-                    is_omni=not settings.thinker,
-                    max_new_tokens=None,
-                    target_text=target_text,
-                    pairs=wav_pairs,
-                )
+                if pair_votes <= 1:
+                    votes = pairwise_preferences_batched(
+                        processor,
+                        model,
+                        is_omni=not settings.thinker,
+                        max_new_tokens=None,
+                        target_text=target_text,
+                        pairs=wav_pairs,
+                    )
+                    actual_vote_count = len(wav_pairs)
+                    votes_used_per_pair = [1] * len(wav_pairs)
+                    outcomes = collapse_pairwise_votes(votes, 1)
+                else:
+                    first_round_pairs = [pair for pair in wav_pairs for _ in range(2)]
+                    first_votes = pairwise_preferences_batched(
+                        processor,
+                        model,
+                        is_omni=not settings.thinker,
+                        max_new_tokens=None,
+                        target_text=target_text,
+                        pairs=first_round_pairs,
+                    )
+                    conflict_pairs = [
+                        wav_pairs[idx]
+                        for idx in range(len(wav_pairs))
+                        if first_votes[idx * 2] != first_votes[idx * 2 + 1]
+                    ]
+                    third_votes: list[int] = []
+                    if conflict_pairs:
+                        third_votes = pairwise_preferences_batched(
+                            processor,
+                            model,
+                            is_omni=not settings.thinker,
+                            max_new_tokens=None,
+                            target_text=target_text,
+                            pairs=conflict_pairs,
+                        )
+                    actual_vote_count = len(first_round_pairs) + len(conflict_pairs)
+                    votes_used_per_pair = [
+                        2 + int(first_votes[idx * 2] != first_votes[idx * 2 + 1]) for idx in range(len(wav_pairs))
+                    ]
+                    outcomes = collapse_pairwise_votes_adaptive(first_votes, third_votes)
+            with progress_lock:
+                current_phase = str(progress_state["phase"])
+                if current_phase in actual_counts:
+                    actual_counts[current_phase] += actual_vote_count
+                for votes_used, (left_item, right_item) in zip(votes_used_per_pair, batch):
+                    actual_item_counts[left_item.id] += votes_used
+                    actual_item_counts[right_item.id] += votes_used
+                progress_state["done"] = sum(actual_counts.values())
+                progress_state["phase_counts"] = dict(actual_counts)
+            return outcomes
 
         def on_progress(snapshot) -> None:
             with progress_lock:
                 progress_state["phase"] = snapshot.phase
-                progress_state["done"] = snapshot.comparisons_done
-                progress_state["total"] = snapshot.comparisons_total
-                progress_state["phase_counts"] = dict(snapshot.phase_comparisons)
+                progress_state["total"] = snapshot.comparisons_total if pair_votes <= 1 else snapshot.comparisons_total * 3
 
         last_report = {"t": 0.0}
 
@@ -384,7 +454,11 @@ async def run_rank_job(
                     job_id,
                     {
                         "phase": current_phase,
-                        "message": _phase_message(current_phase, top_k=rank_config.top_k),
+                        "message": _phase_message(
+                            current_phase,
+                            top_k=rank_config.top_k,
+                            pair_votes_per_pair=pair_votes,
+                        ),
                         "comparisons_done": done,
                         "comparisons_total": total,
                         "phase_comparisons": phase_counts,
@@ -418,7 +492,7 @@ async def run_rank_job(
                 "source": it.item.source,
                 "url": it.item.url,
                 "rating": round(it.rating, 3),
-                "comparisons": it.comparisons,
+                "comparisons": actual_item_counts[it.item.id],
                 "ties": it.ties,
             }
             for it in ranked.items
@@ -430,9 +504,9 @@ async def run_rank_job(
                 "status": "succeeded",
                 "phase": "done",
                 "message": "Completed",
-                "comparisons_done": ranked.comparisons_done,
-                "comparisons_total": ranked.comparisons_total,
-                "phase_comparisons": ranked.phase_comparisons,
+                "comparisons_done": sum(actual_counts.values()),
+                "comparisons_total": sum(actual_counts.values()),
+                "phase_comparisons": dict(actual_counts),
                 "progress": 1.0,
                 "ranked_ids": ranked_ids,
                 "ranked_items": ranked_items_public,
