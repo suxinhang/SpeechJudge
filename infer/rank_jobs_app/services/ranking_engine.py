@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from ..core.ranking import (
+    ALGORITHM_FULL_PAIRWISE,
+    PHASE_FULL,
     PHASE_CHALLENGE,
     DEFAULT_ELO_RATING,
     PHASE_EXPLOIT,
@@ -84,7 +86,8 @@ class RankingEngine:
         estimated_total_budget = sum(phase_limits.values())
         explore_schedule = self._round_robin_pairs([item.id for item in items])
         explore_cursor = 0
-        last_phase = PHASE_EXPLORE
+        phase_order = tuple(phase_limits)
+        last_phase = phase_order[0] if phase_order else PHASE_FULL
 
         def emit_progress(phase: str, *, total_budget: int = estimated_total_budget) -> None:
             if progress_callback is None:
@@ -98,12 +101,12 @@ class RankingEngine:
                 )
             )
 
-        for phase in (PHASE_EXPLORE, PHASE_EXPLOIT, PHASE_CHALLENGE, PHASE_TOP_K):
+        for phase in phase_order:
             last_phase = phase
             emit_progress(phase)
             while phase_counts[phase] < phase_limits[phase]:
                 need = min(batch_size, phase_limits[phase] - phase_counts[phase])
-                if phase == PHASE_EXPLORE:
+                if phase in {PHASE_FULL, PHASE_EXPLORE}:
                     pair_ids, explore_cursor = self._select_explore_pairs(
                         states=states,
                         pair_stats=pair_stats,
@@ -291,8 +294,10 @@ class RankingEngine:
                 total = 0 if stats is None else stats.total
                 uncertainty = 1.0 if stats is None else stats.uncertainty()
                 diff = abs(states[left_id].rating - states[right_id].rating)
+                confidence_gap = self._pair_confidence_gap(states[left_id], states[right_id])
                 score = (
                     0 if total == 0 else 1,
+                    confidence_gap,
                     diff,
                     total,
                     -(uncertainty),
@@ -329,12 +334,14 @@ class RankingEngine:
                 total = 0 if stats is None else stats.total
                 uncertainty = 1.0 if stats is None else stats.uncertainty()
                 diff = abs(states[left_id].rating - states[right_id].rating)
+                confidence_gap = self._pair_confidence_gap(states[left_id], states[right_id])
                 left_boundary_distance = abs(left_idx - boundary_idx)
                 right_boundary_distance = abs(right_idx - boundary_idx)
                 boundary_distance = max(left_boundary_distance, right_boundary_distance)
                 span = right_idx - left_idx
                 score = (
                     boundary_distance,
+                    confidence_gap,
                     span,
                     0 if total == 0 else 1,
                     total,
@@ -361,26 +368,21 @@ class RankingEngine:
         if not ranked_ids:
             return []
 
-        focus_count = self._focus_count(ranked_ids)
         boundary_start = max(0, self.config.top_k - self.config.top_k_margin)
         boundary_end = min(
             len(ranked_ids),
             self.config.top_k + max(self.config.top_k_margin, self.config.neighbor_window),
         )
-        challenger_end = min(
-            len(ranked_ids),
-            focus_count + max(self.config.top_k, self.config.top_k_margin * 2),
-        )
-
         defenders = ranked_ids[boundary_start:boundary_end]
-        challengers = ranked_ids[boundary_end:challenger_end]
+        challengers = self._challenge_pool(ranked_ids, boundary_end, states)
         if not defenders or not challengers:
             return []
 
         boundary_idx = min(max(self.config.top_k - 1, 0), len(ranked_ids) - 1)
+        rank_index = {item_id: idx for idx, item_id in enumerate(ranked_ids)}
         candidates: list[tuple[tuple[float, ...], tuple[str, str]]] = []
-        for challenger_idx, challenger_id in enumerate(challengers):
-            challenger_rank = boundary_end + challenger_idx
+        for challenger_id in challengers:
+            challenger_rank = rank_index[challenger_id]
             for defender_idx, defender_id in enumerate(defenders):
                 stats = self._pair_stats_for(pair_stats, challenger_id, defender_id)
                 if not self._should_schedule(stats):
@@ -388,16 +390,19 @@ class RankingEngine:
                 total = 0 if stats is None else stats.total
                 uncertainty = 1.0 if stats is None else stats.uncertainty()
                 diff = abs(states[challenger_id].rating - states[defender_id].rating)
+                confidence_gap = self._promotion_gap(states[challenger_id], states[defender_id])
                 defender_rank = boundary_start + defender_idx
                 defender_distance = abs(defender_rank - boundary_idx)
                 challenger_distance = challenger_rank - boundary_idx
                 score = (
+                    confidence_gap,
                     challenger_distance,
                     defender_distance,
                     0 if total == 0 else 1,
                     total,
                     diff,
                     -(uncertainty),
+                    -self._optimistic_rating(states[challenger_id]),
                 )
                 candidates.append((score, (challenger_id, defender_id)))
         return self._take_candidate_pairs(
@@ -405,7 +410,7 @@ class RankingEngine:
             limit=limit,
             states=states,
             pair_stats=pair_stats,
-            focus_ids=ranked_ids[:challenger_end],
+            focus_ids=defenders + challengers,
         )
 
     def _take_candidate_pairs(
@@ -464,9 +469,11 @@ class RankingEngine:
                 total = 0 if stats is None else stats.total
                 uncertainty = 1.0 if stats is None else stats.uncertainty()
                 diff = abs(states[left_id].rating - states[right_id].rating)
+                confidence_gap = self._pair_confidence_gap(states[left_id], states[right_id])
                 score = (
                     0 if total == 0 else 1,
                     total,
+                    confidence_gap,
                     diff,
                     -(uncertainty),
                 )
@@ -494,6 +501,48 @@ class RankingEngine:
             len(ranked_ids),
             max(self.config.top_k * 2, self.config.top_k + self.config.top_k_margin),
         )
+
+    def _challenge_pool(
+        self,
+        ranked_ids: list[str],
+        boundary_end: int,
+        states: dict[str, _ItemState],
+    ) -> list[str]:
+        if boundary_end >= len(ranked_ids):
+            return []
+        pool = ranked_ids[boundary_end:]
+        challenger_cap = min(
+            len(pool),
+            max(self.config.top_k * 3, self.config.top_k + self.config.top_k_margin * 4),
+        )
+        ranked_pool = sorted(
+            pool,
+            key=lambda item_id: (
+                -self._optimistic_rating(states[item_id]),
+                states[item_id].comparisons,
+                -states[item_id].wins,
+                -states[item_id].rating,
+                item_id,
+            ),
+        )
+        return ranked_pool[:challenger_cap]
+
+    def _confidence_radius(self, state: _ItemState) -> float:
+        return (self.config.base_k_factor * 3.0) / math.sqrt(1.0 + state.comparisons)
+
+    def _optimistic_rating(self, state: _ItemState) -> float:
+        return state.rating + self._confidence_radius(state)
+
+    def _pessimistic_rating(self, state: _ItemState) -> float:
+        return state.rating - self._confidence_radius(state)
+
+    def _pair_confidence_gap(self, left: _ItemState, right: _ItemState) -> float:
+        upper = min(self._optimistic_rating(left), self._optimistic_rating(right))
+        lower = max(self._pessimistic_rating(left), self._pessimistic_rating(right))
+        return max(lower - upper, 0.0)
+
+    def _promotion_gap(self, challenger: _ItemState, defender: _ItemState) -> float:
+        return max(self._pessimistic_rating(defender) - self._optimistic_rating(challenger), 0.0)
 
     @staticmethod
     def _round_robin_pairs(item_ids: list[str]) -> list[tuple[str, str]]:

@@ -10,9 +10,12 @@ if str(INFER_DIR) not in sys.path:
     sys.path.insert(0, str(INFER_DIR))
 
 from rank_jobs_app.core.ranking import (
+    ALGORITHM_FULL_PAIRWISE,
+    ALGORITHM_PHASED_ELO,
     PHASE_CHALLENGE,
     PHASE_EXPLOIT,
     PHASE_EXPLORE,
+    PHASE_FULL,
     PHASE_TOP_K,
     RankingConfig,
     RankingItem,
@@ -52,6 +55,7 @@ class RankingEngineTests(unittest.TestCase):
 
         engine = RankingEngine(
             RankingConfig(
+                algorithm=ALGORITHM_PHASED_ELO,
                 top_k=3,
                 budget_multiplier=3.0,
                 neighbor_window=3,
@@ -91,6 +95,7 @@ class RankingEngineTests(unittest.TestCase):
 
         engine = RankingEngine(
             RankingConfig(
+                algorithm=ALGORITHM_PHASED_ELO,
                 top_k=2,
                 budget_multiplier=2.5,
                 neighbor_window=2,
@@ -117,7 +122,15 @@ class RankingEngineTests(unittest.TestCase):
             RankingItem(id="g", wav_path="g.wav"),
             RankingItem(id="h", wav_path="h.wav"),
         ]
-        engine = RankingEngine(RankingConfig(top_k=3, neighbor_window=2, top_k_margin=2, max_pair_repeats=3))
+        engine = RankingEngine(
+            RankingConfig(
+                algorithm=ALGORITHM_PHASED_ELO,
+                top_k=3,
+                neighbor_window=2,
+                top_k_margin=2,
+                max_pair_repeats=3,
+            )
+        )
         states = {
             item.id: _ItemState(item=item, rating=1700 - idx * 20)
             for idx, item in enumerate(items)
@@ -126,7 +139,34 @@ class RankingEngineTests(unittest.TestCase):
         pairs = engine._select_challenge_pairs(states=states, pair_stats={}, limit=3)
 
         self.assertEqual(pairs[0], ("f", "c"))
-        self.assertNotIn(("f", "e"), pairs[:2])
+        self.assertNotIn(("f", "b"), pairs[:2])
+
+    def test_challenge_refine_surfaces_undercompared_contender(self) -> None:
+        items = [RankingItem(id=chr(ord("a") + idx), wav_path=f"{idx}.wav") for idx in range(8)]
+        engine = RankingEngine(
+            RankingConfig(
+                algorithm=ALGORITHM_PHASED_ELO,
+                top_k=3,
+                neighbor_window=2,
+                top_k_margin=2,
+                max_pair_repeats=3,
+            )
+        )
+        states = {
+            "a": _ItemState(item=items[0], rating=1700, comparisons=18, wins=14),
+            "b": _ItemState(item=items[1], rating=1680, comparisons=18, wins=13),
+            "c": _ItemState(item=items[2], rating=1660, comparisons=18, wins=12),
+            "d": _ItemState(item=items[3], rating=1640, comparisons=18, wins=11),
+            "e": _ItemState(item=items[4], rating=1620, comparisons=18, wins=10),
+            "f": _ItemState(item=items[5], rating=1560, comparisons=14, wins=8),
+            "g": _ItemState(item=items[6], rating=1545, comparisons=16, wins=8),
+            "h": _ItemState(item=items[7], rating=1530, comparisons=1, wins=1),
+        }
+
+        pairs = engine._select_challenge_pairs(states=states, pair_stats={}, limit=3)
+
+        self.assertEqual(pairs[0][0], "h")
+        self.assertEqual(pairs[0][1], "e")
 
     def test_top_k_refine_prefers_boundary_local_pairs(self) -> None:
         items = [
@@ -137,7 +177,14 @@ class RankingEngineTests(unittest.TestCase):
             RankingItem(id="e", wav_path="e.wav"),
             RankingItem(id="f", wav_path="f.wav"),
         ]
-        engine = RankingEngine(RankingConfig(top_k=3, neighbor_window=2, max_pair_repeats=3))
+        engine = RankingEngine(
+            RankingConfig(
+                algorithm=ALGORITHM_PHASED_ELO,
+                top_k=3,
+                neighbor_window=2,
+                max_pair_repeats=3,
+            )
+        )
         states = {
             item.id: _ItemState(item=item, rating=1600 - idx * 25)
             for idx, item in enumerate(items)
@@ -147,6 +194,35 @@ class RankingEngineTests(unittest.TestCase):
 
         self.assertEqual(pairs[0], ("b", "c"))
         self.assertNotIn(("a", "c"), pairs[:2])
+
+    def test_full_pairwise_compares_every_unique_pair_once(self) -> None:
+        items = [
+            RankingItem(id="a", wav_path="a.wav"),
+            RankingItem(id="b", wav_path="b.wav"),
+            RankingItem(id="c", wav_path="c.wav"),
+            RankingItem(id="d", wav_path="d.wav"),
+        ]
+        seen_pairs: list[tuple[str, str]] = []
+        quality = {"a": 100, "b": 80, "c": 60, "d": 40}
+
+        def compare_batch(batch: list[tuple[RankingItem, RankingItem]]) -> list[int]:
+            out: list[int] = []
+            for left, right in batch:
+                seen_pairs.append((left.id, right.id))
+                out.append(1 if quality[left.id] > quality[right.id] else -1)
+            return out
+
+        engine = RankingEngine(RankingConfig(algorithm=ALGORITHM_FULL_PAIRWISE))
+        result = engine.run(items=items, compare_batch=compare_batch, batch_size=2)
+
+        self.assertEqual(result.phase_comparisons, {PHASE_FULL: 6})
+        self.assertEqual(result.comparisons_done, 6)
+        self.assertEqual(result.comparisons_total, 6)
+        self.assertEqual(
+            {tuple(sorted(pair)) for pair in seen_pairs},
+            {("a", "b"), ("a", "c"), ("a", "d"), ("b", "c"), ("b", "d"), ("c", "d")},
+        )
+        self.assertEqual([entry.item.id for entry in result.items], ["a", "b", "c", "d"])
 
 
 if __name__ == "__main__":

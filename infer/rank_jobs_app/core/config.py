@@ -23,6 +23,8 @@ class Settings:
     #: Per-file decode_to_wav attempts (ffmpeg / librosa flakes).
     prepare_decode_attempts: int
     #: Focus set size for refinement is derived from this Top-K target.
+    rank_algorithm: str
+    #: Focus set size for refinement is derived from this Top-K target.
     rank_top_k: int
     #: Multiplier applied to the old merge-sort-style baseline budget.
     rank_budget_multiplier: float
@@ -98,6 +100,12 @@ def load_settings() -> Settings:
         rank_max_pair_repeats = 4
     rank_max_pair_repeats = max(1, min(rank_max_pair_repeats, 10))
 
+    raw_algorithm = os.environ.get("SPEECHJUDGE_RANK_ALGORITHM", "full_pairwise").strip().lower()
+    if raw_algorithm in {"phased_elo", "phased", "fast"}:
+        rank_algorithm = "phased_elo"
+    else:
+        rank_algorithm = "full_pairwise"
+
     return Settings(
         jobs_state_dir=jobs_state_dir,
         job_files_root=job_files_root,
@@ -108,6 +116,7 @@ def load_settings() -> Settings:
         prepare_parallel=prepare_parallel,
         prepare_download_attempts=prepare_download_attempts,
         prepare_decode_attempts=prepare_decode_attempts,
+        rank_algorithm=rank_algorithm,
         rank_top_k=rank_top_k,
         rank_budget_multiplier=rank_budget_multiplier,
         rank_neighbor_window=rank_neighbor_window,

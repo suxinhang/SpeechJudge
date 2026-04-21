@@ -15,6 +15,8 @@ from typing import Any, Iterable
 from fastapi import UploadFile
 
 from ..core.ranking import (
+    ALGORITHM_FULL_PAIRWISE,
+    PHASE_FULL,
     PHASE_CHALLENGE,
     PHASE_EXPLOIT,
     PHASE_EXPLORE,
@@ -22,6 +24,7 @@ from ..core.ranking import (
     RankingConfig,
     RankingItem,
     estimate_total_budget,
+    phase_budgets,
 )
 from ..db.json_jobs import JsonJobStore
 from .audio_io import download_url_to_file, ensure_wav
@@ -225,6 +228,8 @@ async def prepare_job_inputs(
 
 
 def _phase_message(phase: str, *, top_k: int) -> str:
+    if phase == PHASE_FULL:
+        return "Full compare: compare every unique pair once"
     if phase == PHASE_EXPLORE:
         return "Exploration: broad pair coverage"
     if phase == PHASE_EXPLOIT:
@@ -282,25 +287,31 @@ async def run_rank_job(
 
         parallel = max(1, min(int(pairwise_parallel), 32))
         rank_config = RankingConfig(
+            algorithm=str(getattr(settings, "rank_algorithm", ALGORITHM_FULL_PAIRWISE)),
             top_k=min(max(1, int(getattr(settings, "rank_top_k", 20))), n),
             budget_multiplier=float(getattr(settings, "rank_budget_multiplier", 2.0)),
             neighbor_window=int(getattr(settings, "rank_neighbor_window", 4)),
             max_pair_repeats=int(getattr(settings, "rank_max_pair_repeats", 3)),
         )
         total_cmp = estimate_total_budget(n, rank_config)
+        strategy_message = (
+            f"Full pairwise ranking ({total_cmp} unique comparisons)"
+            if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+            else f"Phased Elo ranking (estimated comparisons<={total_cmp})"
+        )
         await _update_job(
             store,
             job_id,
             {
                 "phase": "sort",
-                "message": f"Phased Elo ranking (estimated comparisons<={total_cmp})",
+                "message": strategy_message,
                 "n_items": n,
                 "comparisons_total": total_cmp,
                 "comparisons_done": 0,
                 "progress": 0.0,
                 "pairwise_parallel": parallel,
                 "ranking_strategy": {
-                    "algorithm": "phased_elo",
+                    "algorithm": rank_config.algorithm,
                     "top_k": rank_config.top_k,
                     "budget_multiplier": rank_config.budget_multiplier,
                     "neighbor_window": rank_config.neighbor_window,
@@ -310,16 +321,13 @@ async def run_rank_job(
         )
 
         model, processor = MODEL.get()
+        phase_plan = phase_budgets(n, rank_config)
+        phase_order = list(phase_plan)
         progress_state: dict[str, Any] = {
-            "phase": PHASE_EXPLORE,
+            "phase": phase_order[0] if phase_order else "sort",
             "done": 0,
             "total": total_cmp,
-            "phase_counts": {
-                PHASE_EXPLORE: 0,
-                PHASE_EXPLOIT: 0,
-                PHASE_CHALLENGE: 0,
-                PHASE_TOP_K: 0,
-            },
+            "phase_counts": {phase: 0 for phase in phase_plan},
         }
         progress_lock = threading.Lock()
 

@@ -5,6 +5,10 @@ from dataclasses import dataclass
 
 DEFAULT_ELO_RATING = 1500.0
 
+ALGORITHM_FULL_PAIRWISE = "full_pairwise"
+ALGORITHM_PHASED_ELO = "phased_elo"
+
+PHASE_FULL = "full_compare"
 PHASE_EXPLORE = "explore"
 PHASE_EXPLOIT = "exploit"
 PHASE_CHALLENGE = "challenge_refine"
@@ -22,6 +26,7 @@ class RankingItem:
 
 @dataclass(frozen=True)
 class RankingConfig:
+    algorithm: str = ALGORITHM_FULL_PAIRWISE
     top_k: int = 20
     budget_multiplier: float = 2.0
     min_budget_per_item: int = 8
@@ -44,6 +49,7 @@ class RankingConfig:
         )
         if total <= 0:
             return RankingConfig(
+                algorithm=self._normalized_algorithm(self.algorithm),
                 top_k=self.top_k,
                 budget_multiplier=self.budget_multiplier,
                 min_budget_per_item=self.min_budget_per_item,
@@ -58,6 +64,7 @@ class RankingConfig:
                 min_repeat_uncertainty=self.min_repeat_uncertainty,
             )
         return RankingConfig(
+            algorithm=self._normalized_algorithm(self.algorithm),
             top_k=max(1, self.top_k),
             budget_multiplier=max(1.0, self.budget_multiplier),
             min_budget_per_item=max(1, self.min_budget_per_item),
@@ -71,6 +78,12 @@ class RankingConfig:
             base_k_factor=max(1.0, self.base_k_factor),
             min_repeat_uncertainty=min(max(self.min_repeat_uncertainty, 0.0), 1.0),
         )
+
+    @staticmethod
+    def _normalized_algorithm(value: str) -> str:
+        if value == ALGORITHM_PHASED_ELO:
+            return ALGORITHM_PHASED_ELO
+        return ALGORITHM_FULL_PAIRWISE
 
 
 @dataclass(frozen=True)
@@ -103,6 +116,8 @@ def max_comparison_budget(n_items: int, config: RankingConfig) -> int:
         return 0
     normalized = config.normalized()
     unique_pairs = n_items * (n_items - 1) // 2
+    if normalized.algorithm == ALGORITHM_FULL_PAIRWISE:
+        return unique_pairs
     return unique_pairs * normalized.max_pair_repeats
 
 
@@ -110,6 +125,9 @@ def estimate_total_budget(n_items: int, config: RankingConfig) -> int:
     if n_items <= 1:
         return 0
     normalized = config.normalized()
+    unique_pairs = n_items * (n_items - 1) // 2
+    if normalized.algorithm == ALGORITHM_FULL_PAIRWISE:
+        return unique_pairs
     levels = max(1, math.ceil(math.log2(n_items)))
     baseline = n_items * levels - (1 << levels) + 1
     estimated = max(
@@ -122,6 +140,8 @@ def estimate_total_budget(n_items: int, config: RankingConfig) -> int:
 def phase_budgets(n_items: int, config: RankingConfig) -> dict[str, int]:
     total_budget = estimate_total_budget(n_items, config)
     normalized = config.normalized()
+    if normalized.algorithm == ALGORITHM_FULL_PAIRWISE:
+        return {PHASE_FULL: total_budget}
     explore = int(total_budget * normalized.exploration_ratio)
     exploit = int(total_budget * normalized.exploitation_ratio)
     challenge = int(total_budget * normalized.challenge_ratio)
