@@ -77,25 +77,25 @@ def load_settings() -> Settings:
         rank_top_k = 20
     rank_top_k = max(1, min(rank_top_k, 200))
 
-    raw_budget_mult = os.environ.get("SPEECHJUDGE_RANK_BUDGET_MULTIPLIER", "2.0").strip()
+    raw_budget_mult = os.environ.get("SPEECHJUDGE_RANK_BUDGET_MULTIPLIER", "3.0").strip()
     try:
         rank_budget_multiplier = float(raw_budget_mult)
     except ValueError:
-        rank_budget_multiplier = 2.0
+        rank_budget_multiplier = 3.0
     rank_budget_multiplier = max(1.0, min(rank_budget_multiplier, 8.0))
 
-    raw_window = os.environ.get("SPEECHJUDGE_RANK_NEIGHBOR_WINDOW", "4").strip()
+    raw_window = os.environ.get("SPEECHJUDGE_RANK_NEIGHBOR_WINDOW", "6").strip()
     try:
         rank_neighbor_window = int(raw_window)
     except ValueError:
-        rank_neighbor_window = 4
+        rank_neighbor_window = 6
     rank_neighbor_window = max(1, min(rank_neighbor_window, 20))
 
-    raw_repeats = os.environ.get("SPEECHJUDGE_RANK_MAX_PAIR_REPEATS", "3").strip()
+    raw_repeats = os.environ.get("SPEECHJUDGE_RANK_MAX_PAIR_REPEATS", "4").strip()
     try:
         rank_max_pair_repeats = int(raw_repeats)
     except ValueError:
-        rank_max_pair_repeats = 3
+        rank_max_pair_repeats = 4
     rank_max_pair_repeats = max(1, min(rank_max_pair_repeats, 10))
 
     return Settings(

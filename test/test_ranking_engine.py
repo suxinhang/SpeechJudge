@@ -9,7 +9,14 @@ INFER_DIR = ROOT / "infer"
 if str(INFER_DIR) not in sys.path:
     sys.path.insert(0, str(INFER_DIR))
 
-from rank_jobs_app.core.ranking import PHASE_EXPLOIT, PHASE_EXPLORE, PHASE_TOP_K, RankingConfig, RankingItem
+from rank_jobs_app.core.ranking import (
+    PHASE_CHALLENGE,
+    PHASE_EXPLOIT,
+    PHASE_EXPLORE,
+    PHASE_TOP_K,
+    RankingConfig,
+    RankingItem,
+)
 from rank_jobs_app.services.ranking_engine import RankingEngine, _ItemState
 
 
@@ -92,9 +99,34 @@ class RankingEngineTests(unittest.TestCase):
         )
         result = engine.run(items=items, compare_batch=compare_batch, batch_size=2)
 
-        self.assertEqual(set(result.phase_comparisons), {PHASE_EXPLORE, PHASE_EXPLOIT, PHASE_TOP_K})
+        self.assertEqual(
+            set(result.phase_comparisons),
+            {PHASE_EXPLORE, PHASE_EXPLOIT, PHASE_CHALLENGE, PHASE_TOP_K},
+        )
         self.assertLessEqual(result.comparisons_done, result.comparisons_total)
         self.assertEqual({result.items[0].item.id, result.items[1].item.id}, {"a", "b"})
+
+    def test_challenge_refine_prefers_near_boundary_defenders(self) -> None:
+        items = [
+            RankingItem(id="a", wav_path="a.wav"),
+            RankingItem(id="b", wav_path="b.wav"),
+            RankingItem(id="c", wav_path="c.wav"),
+            RankingItem(id="d", wav_path="d.wav"),
+            RankingItem(id="e", wav_path="e.wav"),
+            RankingItem(id="f", wav_path="f.wav"),
+            RankingItem(id="g", wav_path="g.wav"),
+            RankingItem(id="h", wav_path="h.wav"),
+        ]
+        engine = RankingEngine(RankingConfig(top_k=3, neighbor_window=2, top_k_margin=2, max_pair_repeats=3))
+        states = {
+            item.id: _ItemState(item=item, rating=1700 - idx * 20)
+            for idx, item in enumerate(items)
+        }
+
+        pairs = engine._select_challenge_pairs(states=states, pair_stats={}, limit=3)
+
+        self.assertEqual(pairs[0], ("f", "c"))
+        self.assertNotIn(("f", "e"), pairs[:2])
 
     def test_top_k_refine_prefers_boundary_local_pairs(self) -> None:
         items = [

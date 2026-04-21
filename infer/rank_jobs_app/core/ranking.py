@@ -7,6 +7,7 @@ DEFAULT_ELO_RATING = 1500.0
 
 PHASE_EXPLORE = "explore"
 PHASE_EXPLOIT = "exploit"
+PHASE_CHALLENGE = "challenge_refine"
 PHASE_TOP_K = "top_k_refine"
 
 
@@ -25,8 +26,9 @@ class RankingConfig:
     budget_multiplier: float = 2.0
     min_budget_per_item: int = 8
     exploration_ratio: float = 0.2
-    exploitation_ratio: float = 0.6
-    refinement_ratio: float = 0.2
+    exploitation_ratio: float = 0.5
+    challenge_ratio: float = 0.15
+    refinement_ratio: float = 0.15
     neighbor_window: int = 4
     top_k_margin: int = 6
     max_pair_repeats: int = 3
@@ -34,15 +36,21 @@ class RankingConfig:
     min_repeat_uncertainty: float = 0.45
 
     def normalized(self) -> "RankingConfig":
-        total = self.exploration_ratio + self.exploitation_ratio + self.refinement_ratio
+        total = (
+            self.exploration_ratio
+            + self.exploitation_ratio
+            + self.challenge_ratio
+            + self.refinement_ratio
+        )
         if total <= 0:
             return RankingConfig(
                 top_k=self.top_k,
                 budget_multiplier=self.budget_multiplier,
                 min_budget_per_item=self.min_budget_per_item,
                 exploration_ratio=0.2,
-                exploitation_ratio=0.6,
-                refinement_ratio=0.2,
+                exploitation_ratio=0.5,
+                challenge_ratio=0.15,
+                refinement_ratio=0.15,
                 neighbor_window=self.neighbor_window,
                 top_k_margin=self.top_k_margin,
                 max_pair_repeats=self.max_pair_repeats,
@@ -55,6 +63,7 @@ class RankingConfig:
             min_budget_per_item=max(1, self.min_budget_per_item),
             exploration_ratio=self.exploration_ratio / total,
             exploitation_ratio=self.exploitation_ratio / total,
+            challenge_ratio=self.challenge_ratio / total,
             refinement_ratio=self.refinement_ratio / total,
             neighbor_window=max(1, self.neighbor_window),
             top_k_margin=max(1, self.top_k_margin),
@@ -115,9 +124,11 @@ def phase_budgets(n_items: int, config: RankingConfig) -> dict[str, int]:
     normalized = config.normalized()
     explore = int(total_budget * normalized.exploration_ratio)
     exploit = int(total_budget * normalized.exploitation_ratio)
-    top_k = max(0, total_budget - explore - exploit)
+    challenge = int(total_budget * normalized.challenge_ratio)
+    top_k = max(0, total_budget - explore - exploit - challenge)
     return {
         PHASE_EXPLORE: max(0, explore),
         PHASE_EXPLOIT: max(0, exploit),
+        PHASE_CHALLENGE: max(0, challenge),
         PHASE_TOP_K: max(0, top_k),
     }

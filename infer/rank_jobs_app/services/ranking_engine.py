@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from ..core.ranking import (
+    PHASE_CHALLENGE,
     DEFAULT_ELO_RATING,
     PHASE_EXPLOIT,
     PHASE_EXPLORE,
@@ -97,7 +98,7 @@ class RankingEngine:
                 )
             )
 
-        for phase in (PHASE_EXPLORE, PHASE_EXPLOIT, PHASE_TOP_K):
+        for phase in (PHASE_EXPLORE, PHASE_EXPLOIT, PHASE_CHALLENGE, PHASE_TOP_K):
             last_phase = phase
             emit_progress(phase)
             while phase_counts[phase] < phase_limits[phase]:
@@ -112,6 +113,12 @@ class RankingEngine:
                     )
                 elif phase == PHASE_EXPLOIT:
                     pair_ids = self._select_exploit_pairs(
+                        states=states,
+                        pair_stats=pair_stats,
+                        limit=need,
+                    )
+                elif phase == PHASE_CHALLENGE:
+                    pair_ids = self._select_challenge_pairs(
                         states=states,
                         pair_stats=pair_stats,
                         limit=need,
@@ -309,10 +316,7 @@ class RankingEngine:
     ) -> list[tuple[str, str]]:
         ranked_states = self._sorted_states(states)
         ranked_ids = [state.item.id for state in ranked_states]
-        focus_count = min(
-            len(ranked_ids),
-            max(self.config.top_k * 2, self.config.top_k + self.config.top_k_margin),
-        )
+        focus_count = self._focus_count(ranked_ids)
         focus_ids = ranked_ids[:focus_count]
         boundary_idx = min(max(self.config.top_k - 1, 0), max(focus_count - 1, 0))
         candidates: list[tuple[tuple[float, ...], tuple[str, str]]] = []
@@ -344,6 +348,64 @@ class RankingEngine:
             states=states,
             pair_stats=pair_stats,
             focus_ids=focus_ids,
+        )
+
+    def _select_challenge_pairs(
+        self,
+        *,
+        states: dict[str, _ItemState],
+        pair_stats: dict[tuple[str, str], _PairStats],
+        limit: int,
+    ) -> list[tuple[str, str]]:
+        ranked_ids = [state.item.id for state in self._sorted_states(states)]
+        if not ranked_ids:
+            return []
+
+        focus_count = self._focus_count(ranked_ids)
+        boundary_start = max(0, self.config.top_k - self.config.top_k_margin)
+        boundary_end = min(
+            len(ranked_ids),
+            self.config.top_k + max(self.config.top_k_margin, self.config.neighbor_window),
+        )
+        challenger_end = min(
+            len(ranked_ids),
+            focus_count + max(self.config.top_k, self.config.top_k_margin * 2),
+        )
+
+        defenders = ranked_ids[boundary_start:boundary_end]
+        challengers = ranked_ids[boundary_end:challenger_end]
+        if not defenders or not challengers:
+            return []
+
+        boundary_idx = min(max(self.config.top_k - 1, 0), len(ranked_ids) - 1)
+        candidates: list[tuple[tuple[float, ...], tuple[str, str]]] = []
+        for challenger_idx, challenger_id in enumerate(challengers):
+            challenger_rank = boundary_end + challenger_idx
+            for defender_idx, defender_id in enumerate(defenders):
+                stats = self._pair_stats_for(pair_stats, challenger_id, defender_id)
+                if not self._should_schedule(stats):
+                    continue
+                total = 0 if stats is None else stats.total
+                uncertainty = 1.0 if stats is None else stats.uncertainty()
+                diff = abs(states[challenger_id].rating - states[defender_id].rating)
+                defender_rank = boundary_start + defender_idx
+                defender_distance = abs(defender_rank - boundary_idx)
+                challenger_distance = challenger_rank - boundary_idx
+                score = (
+                    challenger_distance,
+                    defender_distance,
+                    0 if total == 0 else 1,
+                    total,
+                    diff,
+                    -(uncertainty),
+                )
+                candidates.append((score, (challenger_id, defender_id)))
+        return self._take_candidate_pairs(
+            candidates=candidates,
+            limit=limit,
+            states=states,
+            pair_stats=pair_stats,
+            focus_ids=ranked_ids[:challenger_end],
         )
 
     def _take_candidate_pairs(
@@ -425,6 +487,12 @@ class RankingEngine:
         return sorted(
             states.values(),
             key=lambda state: (-state.rating, -state.wins, state.comparisons, state.item.id),
+        )
+
+    def _focus_count(self, ranked_ids: list[str]) -> int:
+        return min(
+            len(ranked_ids),
+            max(self.config.top_k * 2, self.config.top_k + self.config.top_k_margin),
         )
 
     @staticmethod

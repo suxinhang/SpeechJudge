@@ -15,6 +15,7 @@ from typing import Any, Iterable
 from fastapi import UploadFile
 
 from ..core.ranking import (
+    PHASE_CHALLENGE,
     PHASE_EXPLOIT,
     PHASE_EXPLORE,
     PHASE_TOP_K,
@@ -228,6 +229,8 @@ def _phase_message(phase: str, *, top_k: int) -> str:
         return "Exploration: broad pair coverage"
     if phase == PHASE_EXPLOIT:
         return "Exploitation: compare nearby Elo ratings"
+    if phase == PHASE_CHALLENGE:
+        return f"Challenge refine: promote strong items below top {top_k}"
     if phase == PHASE_TOP_K:
         return f"Top-K refine: reinforce top {top_k} boundary"
     return "Ranking"
@@ -314,6 +317,7 @@ async def run_rank_job(
             "phase_counts": {
                 PHASE_EXPLORE: 0,
                 PHASE_EXPLOIT: 0,
+                PHASE_CHALLENGE: 0,
                 PHASE_TOP_K: 0,
             },
         }
