@@ -15,6 +15,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import random
 import re
@@ -27,8 +28,9 @@ from typing import Iterable
 import requests
 
 
-DEFAULT_BASE_URL = "https://successfully-makeup-constitute-abs.trycloudflare.com/"
-DEFAULT_DATA_DIR = r"D:\Downloads\泰语"
+DEFAULT_BASE_URL = "https://showtimes-interface-states-technological.trycloudflare.com/"
+DEFAULT_DATA_DIR = "D:\Downloads\泰语"
+DEFAULT_RESULT_DIR = Path(__file__).resolve().parent / "results"
 DEFAULT_TARGET_TEXT = "ตั้งแต่อายุยังน้อย คิโยซากิและไมค์ เพื่อนของเขามีความปรารถนาอย่างแรงกล้าที่จะกลายเป็นคนร่ำรวย อย่างไรก็ตาม ในตอนแรกพวกเขาไม่รู้ว่าจะทำอย่างไรจึงจะบรรลุเป้าหมายนี้ได้ เมื่อพวกเขาไปขอคำแนะนำจากพ่อของตนเอง พวกเขากลับได้รับคำตอบที่แตกต่างกันอย่างสิ้นเชิง พ่อที่ยากจนของคิโยซากิซึ่งมีการศึกษาดีแต่มีปัญหาทางการเงิน แนะนำให้พวกเขาตั้งใจเรียนและหางานที่มั่นคงทำ แม้คำแนะนำแบบดั้งเดิมนี้จะมาจากความหวังดี แต่มันมักทำให้ผู้คนติดอยู่ในวงจรของการทำงานหนักเพื่อเงิน โดยไม่สามารถสร้างความมั่งคั่งที่แท้จริงได้พ่อที่ยากจนของคิโยซากิเป็นตัวแทนของแนวคิดแบบดั้งเดิมที่ผู้คนจำนวนมากยังคงยึดถือมาจนถึงทุกวันนี้ แนวคิดนี้มักเกิดจากความกลัวต่อความไม่มั่นคงทางการเงิน และความเชื่อว่าการมีการศึกษาที่ดีและงานที่มั่นคงคือกุญแจสู่ความสำเร็จ อย่างไรก็ตาม คิโยซากิอธิบายว่าแนวทางนี้อาจทำให้ผู้คนติดอยู่ในสิ่งที่เรียกว่า “วงจรหนูวิ่ง” หรือ rat race ซึ่งหมายถึงการทำงานอย่างหนักเพื่อรับเงินเดือน แต่เงินจำนวนมากกลับถูกใช้ไปกับภาษี ค่าบิล และค่าใช้จ่ายต่าง ๆ ในชีวิตประจำวัน ดังนั้น แม้ว่าพวกเขาอาจหลีกเลี่ยงความยากจนได้ แต่ก็ยังไม่สามารถสะสมความมั่งคั่งที่แท้จริงได้เลย"
 
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".webm"}
@@ -215,6 +217,37 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
     raise TimeoutError(f"job did not finish in {timeout_seconds}s; last={json.dumps(last, ensure_ascii=False)}")
 
 
+def save_result_json(result_dir: Path, job_id: str, result: dict) -> Path:
+    result_dir.mkdir(parents=True, exist_ok=True)
+    out_path = result_dir / f"{job_id}.json"
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out_path
+
+
+def _parse_dt(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def annotate_result_timing(result: dict) -> dict:
+    created_at = _parse_dt(result.get("created_at"))
+    started_at = _parse_dt(result.get("started_at"))
+    finished_at = _parse_dt(result.get("finished_at"))
+
+    timing: dict[str, float] = {}
+    if created_at is not None and finished_at is not None:
+        timing["queue_to_finish_seconds"] = round((finished_at - created_at).total_seconds(), 3)
+    if started_at is not None and finished_at is not None:
+        timing["run_seconds"] = round((finished_at - started_at).total_seconds(), 3)
+    if timing:
+        result["timing_summary"] = timing
+    return result
+
+
 def main() -> int:
     _configure_stdout_utf8()
     parser = argparse.ArgumentParser(
@@ -224,6 +257,12 @@ def main() -> int:
         ),
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Service base URL")
+    parser.add_argument(
+        "--result-dir",
+        type=Path,
+        default=DEFAULT_RESULT_DIR,
+        help="Directory where the final polled job JSON will be saved locally",
+    )
     parser.add_argument(
         "--urls-file",
         type=Path,
@@ -250,7 +289,7 @@ def main() -> int:
         "--job-timeout",
         type=int,
         default=28800,
-        help="Timeout seconds while polling (bubble sort ~ n*(n-1)/2 comparisons)",
+        help="Timeout seconds while polling (ranking now targets merge-sort-like O(n log n) comparisons)",
     )
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Polling interval seconds")
     parser.add_argument(
@@ -277,13 +316,16 @@ def main() -> int:
             print(f"[error] {exc}", file=sys.stderr)
             return 1
         n = len(urls)
-        est = n * (n - 1) // 2 if n > 1 else 0
-        print(f"[info] mode=urls-file ({args.urls_file}), {n} URLs, ~{est} pairwise comparisons on server", flush=True)
+        est = n * ((n - 1).bit_length()) if n > 1 else 0
+        print(
+            f"[info] mode=urls-file ({args.urls_file}), {n} URLs, "
+            f"roughly O(n log n), est<={est} pairwise comparisons on server",
+            flush=True,
+        )
         if n > 40:
             print(
-                "[info] sort phase uses odd-even bubble (~n²/2 model calls). "
-                "--pairwise-parallel>1 runs several compares in threads, but one GPU often gains little vs serial; "
-                "expect wall-clock roughly (comparisons × time_per_call) / limited parallelism.",
+                "[info] sort phase now uses a lower-comparison ranking path, so large jobs should be much faster "
+                "than the earlier odd-even bubble version. Runtime is still dominated by model call cost.",
                 flush=True,
             )
         if n == 0:
@@ -313,9 +355,9 @@ def main() -> int:
             chosen = choose_random(all_audios, args.sample_size, args.seed)
             mode = f"sample n={args.sample_size}"
         n = len(chosen)
-        est = n * (n - 1) // 2 if n > 1 else 0
+        est = n * ((n - 1).bit_length()) if n > 1 else 0
         print(
-            f"[info] mode={mode}, will upload {n} file(s), ~{est} pairwise comparisons on server",
+            f"[info] mode={mode}, will upload {n} file(s), roughly O(n log n), est<={est} pairwise comparisons on server",
             flush=True,
         )
         if n == 0:
@@ -334,10 +376,20 @@ def main() -> int:
             pairwise_parallel=args.pairwise_parallel,
         )
     print(f"[info] submitted job_id={job_id}", flush=True)
-    result = poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval)
+    result = annotate_result_timing(poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval))
 
     print("[result]", flush=True)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    timing = result.get("timing_summary")
+    if isinstance(timing, dict):
+        queue_to_finish = timing.get("queue_to_finish_seconds")
+        run_seconds = timing.get("run_seconds")
+        if isinstance(queue_to_finish, (int, float)):
+            print(f"[info] total elapsed: {float(queue_to_finish):.3f}s", flush=True)
+        if isinstance(run_seconds, (int, float)):
+            print(f"[info] run elapsed: {float(run_seconds):.3f}s", flush=True)
+    saved_path = save_result_json(Path(args.result_dir), job_id, result)
+    print(f"[info] saved result json: {saved_path}", flush=True)
     if str(result.get("status")) != "succeeded":
         return 2
     return 0
