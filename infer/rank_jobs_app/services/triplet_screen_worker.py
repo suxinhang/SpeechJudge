@@ -71,6 +71,29 @@ def _run_pairwise_batch(
         )
 
 
+async def _run_pairs_one_at_a_time(
+    *,
+    target_text: str,
+    pairs: list[tuple[str, str]],
+    thinker: bool,
+) -> list[int]:
+    """One logical pair per GPU forward.
+
+    Batching multiple long-audio A/B conversations in ``pairwise_preferences_batched`` can
+    allocate tens of GiB VRAM; triplet_screen therefore compares sequentially by default.
+    """
+    outcomes: list[int] = []
+    for pair in pairs:
+        part = await asyncio.to_thread(
+            _run_pairwise_batch,
+            target_text=target_text,
+            pairs=[pair],
+            thinker=thinker,
+        )
+        outcomes.extend(part)
+    return outcomes
+
+
 async def run_triplet_screen_job(
     *,
     store: JsonJobStore,
@@ -134,7 +157,10 @@ async def run_triplet_screen_job(
             {
                 "job_kind": "triplet_screen",
                 "phase": "triplet_screen",
-                "message": f"Random groups of {gs}, round-robin within each group ({n_groups} groups, {total_cmp} pairwise compares)",
+                "message": (
+                    f"Random groups of {gs}, round-robin within each group ({n_groups} groups, "
+                    f"{total_cmp} pairwise compares; one model forward per pair to limit VRAM)"
+                ),
                 "n_items": n,
                 "triplet_screen": {
                     "shuffle_seed": seed_used,
@@ -165,8 +191,7 @@ async def run_triplet_screen_job(
                 wins = [0.0]
             elif m == 2:
                 wav_pairs = [(str(group[0]["wav_path"]), str(group[1]["wav_path"]))]
-                outcomes = await asyncio.to_thread(
-                    _run_pairwise_batch,
+                outcomes = await _run_pairs_one_at_a_time(
                     target_text=target_text,
                     pairs=wav_pairs,
                     thinker=thinker,
@@ -194,8 +219,7 @@ async def run_triplet_screen_job(
                 wav_pairs = [
                     (str(group[i]["wav_path"]), str(group[j]["wav_path"])) for i, j in pair_idx
                 ]
-                outcomes = await asyncio.to_thread(
-                    _run_pairwise_batch,
+                outcomes = await _run_pairs_one_at_a_time(
                     target_text=target_text,
                     pairs=wav_pairs,
                     thinker=thinker,

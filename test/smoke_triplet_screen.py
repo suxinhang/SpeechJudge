@@ -3,20 +3,25 @@
   cd test
   python smoke_triplet_screen.py --urls-file date.txt
   python smoke_triplet_screen.py --urls-file date.txt --base-url https://...
+
+  Default base URL: ``http://127.0.0.1:8010/`` (local uvicorn), or override with env
+  ``SPEECHJUDGE_SMOKE_BASE_URL`` / CLI ``--base-url``. Ephemeral ``*.trycloudflare.com`` tunnels
+  stop resolving once the tunnel process exits; use a live URL or localhost.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
 
 import requests
 
-# 联调默认服务根 URL；CLI --base-url 可覆盖
-SMOKE_DEFAULT_BASE_URL = "https://bottles-possess-moss-austin.trycloudflare.com/"
+# 联调默认：本机 rank API；可用环境变量或 --base-url 覆盖（勿依赖已过期的 trycloudflare 域名）
+SMOKE_DEFAULT_BASE_URL = os.environ.get("SPEECHJUDGE_SMOKE_BASE_URL", "https://fossil-refine-prize-allowing.trycloudflare.com/")
 
 
 def load_urls_from_file(path: Path) -> list[str]:
@@ -49,11 +54,15 @@ def submit_triplet_screen_urls(
     }
     if shuffle_seed is not None:
         data["shuffle_seed"] = str(int(shuffle_seed))
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/jobs/triplet_screen",
-        data=data,
-        timeout=timeout,
-    )
+    post_url = f"{base_url.rstrip('/')}/jobs/triplet_screen"
+    try:
+        resp = requests.post(post_url, data=data, timeout=timeout)
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"POST {post_url} failed: {exc}\n"
+            "Hint: ensure the rank API is reachable. Use --base-url or set SPEECHJUDGE_SMOKE_BASE_URL. "
+            "Temporary *.trycloudflare.com hostnames fail DNS after the tunnel stops."
+        ) from exc
     if resp.status_code >= 400:
         raise RuntimeError(f"POST failed: HTTP {resp.status_code}, body={resp.text[:2000]}")
     payload = resp.json()
@@ -68,8 +77,14 @@ def poll_job(base_url: str, job_id: str, timeout_seconds: int, interval: float) 
     url = f"{base_url.rstrip('/')}/jobs/{job_id}"
     last: dict = {}
     while time.time() < deadline:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                f"GET {url} failed: {exc}\n"
+                "Hint: check --base-url / SPEECHJUDGE_SMOKE_BASE_URL and that the tunnel or server is up."
+            ) from exc
         last = resp.json()
         status = str(last.get("status", ""))
         phase = str(last.get("phase", ""))
@@ -85,7 +100,7 @@ def main() -> int:
     parser.add_argument(
         "--base-url",
         default=SMOKE_DEFAULT_BASE_URL,
-        help="Rank API base URL (default: SMOKE_DEFAULT_BASE_URL in this script)",
+        help="Rank API base URL (default: http://127.0.0.1:8010/ or SPEECHJUDGE_SMOKE_BASE_URL)",
     )
     parser.add_argument("--urls-file", type=Path, required=True)
     parser.add_argument("--target-text", default="smoke triplet screen")
@@ -113,6 +128,15 @@ def main() -> int:
     print(f"[info] job_id={job_id}", flush=True)
     print(f"[info] job_url={base_url}/jobs/{job_id}", flush=True)
     result = poll_job(base_url, job_id, args.job_timeout, args.poll_interval)
+
+    if str(result.get("status")) == "failed":
+        err = result.get("error")
+        msg = result.get("message")
+        print("[error] job failed", flush=True)
+        if msg:
+            print(f"  message: {msg}", flush=True)
+        if err:
+            print(f"  error: {err}", flush=True)
 
     winners = result.get("winners") or []
     eliminated = result.get("eliminated") or []
