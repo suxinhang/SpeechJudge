@@ -34,6 +34,8 @@ class Settings:
     rank_neighbor_window: int
     #: Max repeated comparisons kept for an uncertain pair.
     rank_max_pair_repeats: int
+    #: After `full_pairwise` compares: `round_robin_points` (default) or `bradley_terry`.
+    rank_full_pairwise_aggregation: str
 
 
 def load_settings() -> Settings:
@@ -116,6 +118,11 @@ def load_settings() -> Settings:
     else:
         rank_algorithm = "full_pairwise"
 
+    raw_agg = os.environ.get(
+        "SPEECHJUDGE_RANK_FULL_PAIRWISE_AGGREGATION", "round_robin_points"
+    ).strip()
+    rank_full_pairwise_aggregation = raw_agg or "round_robin_points"
+
     return Settings(
         jobs_state_dir=jobs_state_dir,
         job_files_root=job_files_root,
@@ -132,4 +139,5 @@ def load_settings() -> Settings:
         rank_budget_multiplier=rank_budget_multiplier,
         rank_neighbor_window=rank_neighbor_window,
         rank_max_pair_repeats=rank_max_pair_repeats,
+        rank_full_pairwise_aggregation=rank_full_pairwise_aggregation,
     )

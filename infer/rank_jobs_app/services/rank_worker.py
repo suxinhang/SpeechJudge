@@ -16,6 +16,8 @@ from fastapi import UploadFile
 
 from ..core.ranking import (
     ALGORITHM_FULL_PAIRWISE,
+    ALGORITHM_PHASED_ELO,
+    FULL_PAIRWISE_AGG_BRADLEY_TERRY,
     PHASE_FULL,
     PHASE_CHALLENGE,
     PHASE_EXPLOIT,
@@ -245,6 +247,21 @@ def _phase_message(phase: str, *, top_k: int, pair_votes_per_pair: int) -> str:
     return "Ranking"
 
 
+def _job_rank_algorithm(override: str | None, *, settings: Any) -> str:
+    if override is not None and str(override).strip():
+        v = str(override).strip().lower()
+        if v in {"phased_elo", "phased", "fast"}:
+            return ALGORITHM_PHASED_ELO
+        return ALGORITHM_FULL_PAIRWISE
+    return str(getattr(settings, "rank_algorithm", ALGORITHM_FULL_PAIRWISE))
+
+
+def _job_full_pairwise_aggregation(override: str | None, *, settings: Any) -> str:
+    if override is not None and str(override).strip():
+        return str(override).strip()
+    return str(getattr(settings, "rank_full_pairwise_aggregation", "round_robin_points"))
+
+
 async def run_rank_job(
     *,
     store: JsonJobStore,
@@ -258,6 +275,8 @@ async def run_rank_job(
     prepare_parallel: int,
     prepare_download_attempts: int,
     prepare_decode_attempts: int,
+    rank_algorithm: str | None = None,
+    full_pairwise_aggregation: str | None = None,
 ) -> None:
     job_dir = settings.job_files_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -292,23 +311,34 @@ async def run_rank_job(
 
         parallel = max(1, min(int(pairwise_parallel), 32))
         pair_votes = 1 if int(pairwise_votes_per_pair) == 1 else 3
+        job_algo = _job_rank_algorithm(rank_algorithm, settings=settings)
+        job_agg = _job_full_pairwise_aggregation(full_pairwise_aggregation, settings=settings)
         rank_config = RankingConfig(
-            algorithm=str(getattr(settings, "rank_algorithm", ALGORITHM_FULL_PAIRWISE)),
+            algorithm=job_algo,
             top_k=min(max(1, int(getattr(settings, "rank_top_k", 20))), n),
             budget_multiplier=float(getattr(settings, "rank_budget_multiplier", 2.0)),
             neighbor_window=int(getattr(settings, "rank_neighbor_window", 4)),
             max_pair_repeats=int(getattr(settings, "rank_max_pair_repeats", 3)),
-        )
+            full_pairwise_aggregation=job_agg,
+        ).normalized()
         logical_total_cmp = estimate_total_budget(n, rank_config)
         min_total_cmp = logical_total_cmp if pair_votes <= 1 else logical_total_cmp * 2
         total_cmp = logical_total_cmp if pair_votes <= 1 else logical_total_cmp * 3
+        bt_suffix = (
+            ", Bradley-Terry final order"
+            if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+            and rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_BRADLEY_TERRY
+            else ""
+        )
         strategy_message = (
             (
                 f"Full pairwise ranking ({logical_total_cmp} pairs x 1 vote = {total_cmp} model comparisons)"
+                f"{bt_suffix}"
                 if pair_votes <= 1
                 else (
                     f"Full pairwise ranking ({logical_total_cmp} pairs, adaptive 2-of-3 voting, "
                     f"{min_total_cmp}-{total_cmp} model comparisons)"
+                    f"{bt_suffix}"
                 )
             )
             if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
@@ -337,7 +367,7 @@ async def run_rank_job(
                 "ranking_strategy": {
                     "algorithm": rank_config.algorithm,
                     "aggregation": (
-                        "round_robin_points"
+                        rank_config.full_pairwise_aggregation
                         if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
                         else "elo"
                     ),

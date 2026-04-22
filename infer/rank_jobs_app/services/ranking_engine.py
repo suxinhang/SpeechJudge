@@ -6,6 +6,7 @@ from typing import Callable, Sequence
 
 from ..core.ranking import (
     ALGORITHM_FULL_PAIRWISE,
+    FULL_PAIRWISE_AGG_BRADLEY_TERRY,
     PHASE_FULL,
     PHASE_CHALLENGE,
     DEFAULT_ELO_RATING,
@@ -151,11 +152,14 @@ class RankingEngine:
                     phase_counts[phase] += 1
                 emit_progress(phase)
 
-        ranked = (
-            self._rank_full_pairwise(states, pair_stats)
-            if self.config.algorithm == ALGORITHM_FULL_PAIRWISE
-            else self._sorted_states(states)
-        )
+        rating_override: dict[str, float] | None = None
+        if self.config.algorithm == ALGORITHM_FULL_PAIRWISE:
+            if self.config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_BRADLEY_TERRY:
+                ranked, rating_override = self._rank_bradley_terry(states, pair_stats)
+            else:
+                ranked = self._rank_full_pairwise(states, pair_stats)
+        else:
+            ranked = self._sorted_states(states)
         comparisons_done = sum(phase_counts.values())
         comparisons_total = estimated_total_budget if comparisons_done >= estimated_total_budget else comparisons_done
         emit_progress(last_phase, total_budget=comparisons_total)
@@ -163,7 +167,11 @@ class RankingEngine:
             items=[
                 RankedItemResult(
                     item=state.item,
-                    rating=state.rating,
+                    rating=(
+                        float(rating_override[state.item.id])
+                        if rating_override is not None
+                        else state.rating
+                    ),
                     comparisons=state.comparisons,
                     wins=state.wins,
                     ties=state.ties,
@@ -528,6 +536,90 @@ class RankingEngine:
                 )
             )
         return ranked
+
+    def _rank_bradley_terry(
+        self,
+        states: dict[str, _ItemState],
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> tuple[list[_ItemState], dict[str, float]]:
+        """Order items by Bradley–Terry MLE strengths (Hunter MM). Ties use wins, then id."""
+        item_ids = sorted({state.item.id for state in states.values()})
+        gamma = self._bradley_terry_mm(item_ids, pair_stats)
+        if not item_ids:
+            return [], {}
+        log_vals = {i: math.log(max(gamma[i], 1e-300)) for i in item_ids}
+        mean_log = sum(log_vals.values()) / len(item_ids)
+        rating_override = {
+            i: DEFAULT_ELO_RATING + 400.0 * (log_vals[i] - mean_log) for i in item_ids
+        }
+        ranked_states = sorted(
+            states.values(),
+            key=lambda state: (
+                -gamma[state.item.id],
+                -state.wins,
+                state.comparisons,
+                state.item.id,
+            ),
+        )
+        return ranked_states, rating_override
+
+    @staticmethod
+    def _bradley_terry_mm(
+        item_ids: list[str],
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> dict[str, float]:
+        """Hunter (2004) MM iterations for Bradley–Terry strengths; ties split 0.5–0.5."""
+        ids = list(item_ids)
+        n = len(ids)
+        if n == 0:
+            return {}
+        if n == 1:
+            return {ids[0]: 1.0}
+
+        id_set = set(ids)
+        wins: dict[str, float] = {i: 0.0 for i in ids}
+        games: dict[tuple[str, str], float] = {}
+        for key, stats in pair_stats.items():
+            lid, rid = key[0], key[1]
+            if lid not in id_set or rid not in id_set:
+                continue
+            lw = float(stats.left_wins)
+            rw = float(stats.right_wins)
+            t = float(stats.ties)
+            wins[lid] += lw + 0.5 * t
+            wins[rid] += rw + 0.5 * t
+            games[key] = lw + rw + t
+
+        gamma = {i: 1.0 for i in ids}
+        for _ in range(10_000):
+            new_gamma: dict[str, float] = {}
+            for i in ids:
+                denom = 0.0
+                for j in ids:
+                    if j == i:
+                        continue
+                    key = (i, j) if i < j else (j, i)
+                    tij = games.get(key, 0.0)
+                    if tij <= 0.0:
+                        continue
+                    denom += tij / (gamma[i] + gamma[j])
+                if denom <= 0.0:
+                    new_gamma[i] = gamma[i]
+                else:
+                    new_gamma[i] = wins[i] / denom
+            log_scale = sum(math.log(max(new_gamma[i], 1e-300)) for i in ids) / n
+            scale = math.exp(-log_scale)
+            for i in ids:
+                new_gamma[i] = max(new_gamma[i] * scale, 1e-300)
+
+            max_rel = max(
+                abs(new_gamma[i] - gamma[i]) / max(gamma[i], 1e-300) for i in ids
+            )
+            gamma = new_gamma
+            if max_rel < 1e-12:
+                break
+
+        return gamma
 
     def _group_points(
         self,

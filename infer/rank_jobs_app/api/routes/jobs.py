@@ -9,7 +9,11 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from pydantic import BaseModel, Field
 
 from ...db.json_jobs import JsonJobStore
-from ...services.rank_worker import run_rank_job
+from ...services.rank_worker import (
+    _job_full_pairwise_aggregation,
+    _job_rank_algorithm,
+    run_rank_job,
+)
 
 
 class CreateJobResponse(BaseModel):
@@ -51,6 +55,20 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             description=(
                 "Prepare phase: max concurrent URL downloads / upload transcodes (1–32). "
                 "Omit to use server default from SPEECHJUDGE_PREPARE_PARALLEL."
+            ),
+        ),
+        rank_algorithm: str | None = Form(
+            default=None,
+            description=(
+                "Override ranking mode for this job: `full_pairwise` or `phased_elo` "
+                "(aliases: phased, fast). Omit to use server SPEECHJUDGE_RANK_ALGORITHM."
+            ),
+        ),
+        full_pairwise_aggregation: str | None = Form(
+            default=None,
+            description=(
+                "When rank mode is full_pairwise: `round_robin_points` (default) or "
+                "`bradley_terry` (aliases: bt). Omit to use SPEECHJUDGE_RANK_FULL_PAIRWISE_AGGREGATION."
             ),
         ),
     ) -> CreateJobResponse:
@@ -103,6 +121,11 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
         prep_dl = int(getattr(settings, "prepare_download_attempts", 5))
         prep_dec = int(getattr(settings, "prepare_decode_attempts", 3))
 
+        job_rank_algorithm = _job_rank_algorithm(rank_algorithm, settings=settings)
+        job_full_pairwise_aggregation = _job_full_pairwise_aggregation(
+            full_pairwise_aggregation, settings=settings
+        )
+
         doc: dict[str, Any] = {
             "status": "queued",
             "phase": "queued",
@@ -118,6 +141,8 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             "prepare_parallel": prep,
             "prepare_download_attempts": prep_dl,
             "prepare_decode_attempts": prep_dec,
+            "rank_algorithm": job_rank_algorithm,
+            "full_pairwise_aggregation": job_full_pairwise_aggregation,
         }
         try:
             job_id = await store.insert_job(doc)
@@ -140,6 +165,8 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             prepare_parallel=prep,
             prepare_download_attempts=prep_dl,
             prepare_decode_attempts=prep_dec,
+            rank_algorithm=rank_algorithm,
+            full_pairwise_aggregation=full_pairwise_aggregation,
         )
         return CreateJobResponse(job_id=job_id)
 

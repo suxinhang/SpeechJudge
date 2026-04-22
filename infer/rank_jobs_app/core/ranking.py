@@ -8,6 +8,10 @@ DEFAULT_ELO_RATING = 1500.0
 ALGORITHM_FULL_PAIRWISE = "full_pairwise"
 ALGORITHM_PHASED_ELO = "phased_elo"
 
+# How final order is derived after `full_pairwise` comparisons complete.
+FULL_PAIRWISE_AGG_ROUND_ROBIN = "round_robin_points"
+FULL_PAIRWISE_AGG_BRADLEY_TERRY = "bradley_terry"
+
 PHASE_FULL = "full_compare"
 PHASE_EXPLORE = "explore"
 PHASE_EXPLOIT = "exploit"
@@ -39,6 +43,9 @@ class RankingConfig:
     max_pair_repeats: int = 3
     base_k_factor: float = 24.0
     min_repeat_uncertainty: float = 0.45
+    #: When algorithm is `full_pairwise`, order results by round-robin wins + tie-breaks,
+    # or by Bradley–Terry strengths (Hunter MM on pairwise counts).
+    full_pairwise_aggregation: str = FULL_PAIRWISE_AGG_ROUND_ROBIN
 
     def normalized(self) -> "RankingConfig":
         total = (
@@ -62,6 +69,9 @@ class RankingConfig:
                 max_pair_repeats=self.max_pair_repeats,
                 base_k_factor=self.base_k_factor,
                 min_repeat_uncertainty=self.min_repeat_uncertainty,
+                full_pairwise_aggregation=self._normalized_full_pairwise_aggregation(
+                    self.full_pairwise_aggregation
+                ),
             )
         return RankingConfig(
             algorithm=self._normalized_algorithm(self.algorithm),
@@ -77,6 +87,9 @@ class RankingConfig:
             max_pair_repeats=max(1, self.max_pair_repeats),
             base_k_factor=max(1.0, self.base_k_factor),
             min_repeat_uncertainty=min(max(self.min_repeat_uncertainty, 0.0), 1.0),
+            full_pairwise_aggregation=self._normalized_full_pairwise_aggregation(
+                self.full_pairwise_aggregation
+            ),
         )
 
     @staticmethod
@@ -84,6 +97,13 @@ class RankingConfig:
         if value == ALGORITHM_PHASED_ELO:
             return ALGORITHM_PHASED_ELO
         return ALGORITHM_FULL_PAIRWISE
+
+    @staticmethod
+    def _normalized_full_pairwise_aggregation(value: str) -> str:
+        v = (value or "").strip().lower().replace("-", "_")
+        if v in {"bradley_terry", "bt"}:
+            return FULL_PAIRWISE_AGG_BRADLEY_TERRY
+        return FULL_PAIRWISE_AGG_ROUND_ROBIN
 
 
 @dataclass(frozen=True)
