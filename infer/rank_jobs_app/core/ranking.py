@@ -11,6 +11,8 @@ ALGORITHM_PHASED_ELO = "phased_elo"
 # How final order is derived after `full_pairwise` comparisons complete.
 FULL_PAIRWISE_AGG_ROUND_ROBIN = "round_robin_points"
 FULL_PAIRWISE_AGG_BRADLEY_TERRY = "bradley_terry"
+# Rank Centrality stationary distribution, then Bradley–Terry as refine key; job output Top-K only.
+FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT = "rank_centrality_bt"
 
 PHASE_FULL = "full_compare"
 PHASE_EXPLORE = "explore"
@@ -44,7 +46,7 @@ class RankingConfig:
     base_k_factor: float = 24.0
     min_repeat_uncertainty: float = 0.45
     #: When algorithm is `full_pairwise`, order results by round-robin wins + tie-breaks,
-    # or by Bradley–Terry strengths (Hunter MM on pairwise counts).
+    # Bradley–Terry (Hunter MM), or Rank Centrality with BT refine (`rank_centrality_bt`).
     full_pairwise_aggregation: str = FULL_PAIRWISE_AGG_ROUND_ROBIN
 
     def normalized(self) -> "RankingConfig":
@@ -103,6 +105,8 @@ class RankingConfig:
         v = (value or "").strip().lower().replace("-", "_")
         if v in {"bradley_terry", "bt"}:
             return FULL_PAIRWISE_AGG_BRADLEY_TERRY
+        if v in {"rank_centrality_bt", "rc_bt", "rank_cent_bt"}:
+            return FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT
         return FULL_PAIRWISE_AGG_ROUND_ROBIN
 
 
@@ -129,6 +133,8 @@ class RankingResult:
     comparisons_done: int
     comparisons_total: int
     phase_comparisons: dict[str, int]
+    #: Optional per-item diagnostics (e.g. rank_centrality_bt: rc + bt_rating).
+    item_aux: dict[str, dict[str, float]] | None = None
 
 
 def majority_vote(votes: list[int]) -> int:

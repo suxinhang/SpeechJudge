@@ -7,6 +7,7 @@ from typing import Callable, Sequence
 from ..core.ranking import (
     ALGORITHM_FULL_PAIRWISE,
     FULL_PAIRWISE_AGG_BRADLEY_TERRY,
+    FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT,
     PHASE_FULL,
     PHASE_CHALLENGE,
     DEFAULT_ELO_RATING,
@@ -153,9 +154,12 @@ class RankingEngine:
                 emit_progress(phase)
 
         rating_override: dict[str, float] | None = None
+        item_aux: dict[str, dict[str, float]] | None = None
         if self.config.algorithm == ALGORITHM_FULL_PAIRWISE:
             if self.config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_BRADLEY_TERRY:
                 ranked, rating_override = self._rank_bradley_terry(states, pair_stats)
+            elif self.config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT:
+                ranked, rating_override, item_aux = self._rank_rank_centrality_bt(states, pair_stats)
             else:
                 ranked = self._rank_full_pairwise(states, pair_stats)
         else:
@@ -181,6 +185,7 @@ class RankingEngine:
             comparisons_done=comparisons_done,
             comparisons_total=comparisons_total,
             phase_comparisons=dict(phase_counts),
+            item_aux=item_aux,
         )
 
     @staticmethod
@@ -562,6 +567,106 @@ class RankingEngine:
             ),
         )
         return ranked_states, rating_override
+
+    def _rank_rank_centrality_bt(
+        self,
+        states: dict[str, _ItemState],
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> tuple[list[_ItemState], dict[str, float], dict[str, dict[str, float]]]:
+        """Rank Centrality (Markov stationary) primary order; BT strengths refine ties."""
+        item_ids = sorted({state.item.id for state in states.values()})
+        if not item_ids:
+            return [], {}, {}
+        W = self._directed_wins_matrix(item_ids, pair_stats)
+        rc = self._rank_centrality_stationary(item_ids, W)
+        gamma = self._bradley_terry_mm(item_ids, pair_stats)
+        log_vals = {i: math.log(max(gamma[i], 1e-300)) for i in item_ids}
+        mean_log = sum(log_vals.values()) / len(item_ids)
+        rating_override = {
+            i: DEFAULT_ELO_RATING + 400.0 * (log_vals[i] - mean_log) for i in item_ids
+        }
+        ranked_states = sorted(
+            states.values(),
+            key=lambda state: (
+                -rc[state.item.id],
+                -gamma[state.item.id],
+                -state.wins,
+                state.comparisons,
+                state.item.id,
+            ),
+        )
+        item_aux = {
+            i: {"rank_centrality": float(rc[i]), "bt_rating": float(rating_override[i])}
+            for i in item_ids
+        }
+        return ranked_states, rating_override, item_aux
+
+    @staticmethod
+    def _directed_wins_matrix(
+        item_ids: list[str],
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> list[list[float]]:
+        n = len(item_ids)
+        idx = {sid: k for k, sid in enumerate(item_ids)}
+        wmat = [[0.0] * n for _ in range(n)]
+        for key, stats in pair_stats.items():
+            lid, rid = key[0], key[1]
+            if lid not in idx or rid not in idx:
+                continue
+            i, j = idx[lid], idx[rid]
+            t = float(stats.ties)
+            wmat[i][j] += float(stats.left_wins) + 0.5 * t
+            wmat[j][i] += float(stats.right_wins) + 0.5 * t
+        return wmat
+
+    @staticmethod
+    def _rank_centrality_stationary(
+        item_ids: list[str],
+        wmat: list[list[float]],
+    ) -> dict[str, float]:
+        """Negahban–Shah–Wainwright-style Rank Centrality (row-stochastic walk, power method)."""
+        n = len(item_ids)
+        if n == 0:
+            return {}
+        if n == 1:
+            return {item_ids[0]: 1.0}
+        a_mat = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                tot = wmat[i][j] + wmat[j][i]
+                if tot > 0.0:
+                    a_mat[i][j] = wmat[j][i] / tot
+        degrees = [sum(a_mat[i][j] for j in range(n) if j != i) for i in range(n)]
+        d_max = max(degrees)
+        if d_max <= 0.0:
+            return {item_ids[i]: 1.0 / n for i in range(n)}
+        p_mat = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            off = sum(a_mat[i][j] for j in range(n) if j != i)
+            for j in range(n):
+                if i == j:
+                    p_mat[i][j] = 1.0 - off / d_max
+                else:
+                    p_mat[i][j] = a_mat[i][j] / d_max
+        pi = [1.0 / n] * n
+        for _ in range(100_000):
+            new_pi = [0.0] * n
+            for j in range(n):
+                acc = 0.0
+                for i in range(n):
+                    acc += pi[i] * p_mat[i][j]
+                new_pi[j] = acc
+            ssum = sum(new_pi)
+            if ssum <= 0.0:
+                break
+            new_pi = [x / ssum for x in new_pi]
+            delta = max(abs(new_pi[i] - pi[i]) for i in range(n))
+            pi = new_pi
+            if delta < 1e-15:
+                break
+        return {item_ids[i]: pi[i] for i in range(n)}
 
     @staticmethod
     def _bradley_terry_mm(

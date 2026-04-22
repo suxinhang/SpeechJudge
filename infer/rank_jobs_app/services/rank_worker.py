@@ -18,6 +18,7 @@ from ..core.ranking import (
     ALGORITHM_FULL_PAIRWISE,
     ALGORITHM_PHASED_ELO,
     FULL_PAIRWISE_AGG_BRADLEY_TERRY,
+    FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT,
     PHASE_FULL,
     PHASE_CHALLENGE,
     PHASE_EXPLOIT,
@@ -324,21 +325,23 @@ async def run_rank_job(
         logical_total_cmp = estimate_total_budget(n, rank_config)
         min_total_cmp = logical_total_cmp if pair_votes <= 1 else logical_total_cmp * 2
         total_cmp = logical_total_cmp if pair_votes <= 1 else logical_total_cmp * 3
-        bt_suffix = (
-            ", Bradley-Terry final order"
-            if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
-            and rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_BRADLEY_TERRY
-            else ""
-        )
+        agg_suffix = ""
+        if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE:
+            if rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_BRADLEY_TERRY:
+                agg_suffix = ", Bradley-Terry final order"
+            elif rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT:
+                agg_suffix = (
+                    f", Rank Centrality + BT refine, output top {min(rank_config.top_k, n)} only"
+                )
         strategy_message = (
             (
                 f"Full pairwise ranking ({logical_total_cmp} pairs x 1 vote = {total_cmp} model comparisons)"
-                f"{bt_suffix}"
+                f"{agg_suffix}"
                 if pair_votes <= 1
                 else (
                     f"Full pairwise ranking ({logical_total_cmp} pairs, adaptive 2-of-3 voting, "
                     f"{min_total_cmp}-{total_cmp} model comparisons)"
-                    f"{bt_suffix}"
+                    f"{agg_suffix}"
                 )
             )
             if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
@@ -352,6 +355,26 @@ async def run_rank_job(
                 )
             )
         )
+        ranking_strategy: dict[str, Any] = {
+            "algorithm": rank_config.algorithm,
+            "aggregation": (
+                rank_config.full_pairwise_aggregation
+                if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+                else "elo"
+            ),
+            "pair_votes_per_pair": pair_votes,
+            "top_k": rank_config.top_k,
+            "budget_multiplier": rank_config.budget_multiplier,
+            "neighbor_window": rank_config.neighbor_window,
+            "max_pair_repeats": rank_config.max_pair_repeats,
+        }
+        if (
+            rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+            and rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT
+        ):
+            ranking_strategy["output_top_k_only"] = True
+            ranking_strategy["output_limit"] = min(rank_config.top_k, n)
+
         await _update_job(
             store,
             job_id,
@@ -364,19 +387,7 @@ async def run_rank_job(
                 "progress": 0.0,
                 "pairwise_parallel": parallel,
                 "pairwise_votes_per_pair": pair_votes,
-                "ranking_strategy": {
-                    "algorithm": rank_config.algorithm,
-                    "aggregation": (
-                        rank_config.full_pairwise_aggregation
-                        if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
-                        else "elo"
-                    ),
-                    "pair_votes_per_pair": pair_votes,
-                    "top_k": rank_config.top_k,
-                    "budget_multiplier": rank_config.budget_multiplier,
-                    "neighbor_window": rank_config.neighbor_window,
-                    "max_pair_repeats": rank_config.max_pair_repeats,
-                },
+                "ranking_strategy": ranking_strategy,
             },
         )
 
@@ -533,24 +544,43 @@ async def run_rank_job(
             }
             for it in ranked.items
         ]
-        await _update_job(
-            store,
-            job_id,
-            {
-                "status": "succeeded",
-                "phase": "done",
-                "message": "Completed",
-                "comparisons_done": sum(actual_counts.values()),
-                "comparisons_total": sum(actual_counts.values()),
-                "phase_comparisons": dict(actual_counts),
-                "progress": 1.0,
-                "ranked_ids": ranked_ids,
-                "ranked_items": ranked_items_public,
-                "items": [],
-                "temp_paths": [],
-                "finished_at": _utcnow(),
-            },
-        )
+        if ranked.item_aux:
+            for row in ranked_items_public:
+                a = ranked.item_aux.get(row["id"])
+                if a:
+                    row["rank_centrality"] = round(float(a["rank_centrality"]), 8)
+                    row["bt_rating"] = round(float(a["bt_rating"]), 3)
+
+        if (
+            rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+            and rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT
+        ):
+            lim = min(rank_config.top_k, len(ranked_ids))
+            ranked_ids = ranked_ids[:lim]
+            ranked_items_public = ranked_items_public[:lim]
+
+        done_payload: dict[str, Any] = {
+            "status": "succeeded",
+            "phase": "done",
+            "message": "Completed",
+            "comparisons_done": sum(actual_counts.values()),
+            "comparisons_total": sum(actual_counts.values()),
+            "phase_comparisons": dict(actual_counts),
+            "progress": 1.0,
+            "ranked_ids": ranked_ids,
+            "ranked_items": ranked_items_public,
+            "items": [],
+            "temp_paths": [],
+            "finished_at": _utcnow(),
+        }
+        if (
+            rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+            and rank_config.full_pairwise_aggregation == FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT
+        ):
+            done_payload["n_ranked_output"] = len(ranked_ids)
+            done_payload["n_ranked_total"] = n
+
+        await _update_job(store, job_id, done_payload)
     except Exception as exc:
         await _update_job(
             store,

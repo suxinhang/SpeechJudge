@@ -67,8 +67,9 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
         full_pairwise_aggregation: str | None = Form(
             default=None,
             description=(
-                "When rank mode is full_pairwise: `round_robin_points` (default) or "
-                "`bradley_terry` (aliases: bt). Omit to use SPEECHJUDGE_RANK_FULL_PAIRWISE_AGGREGATION."
+                "When rank mode is full_pairwise: `round_robin_points` (default), "
+                "`bradley_terry` (bt), or `rank_centrality_bt` (rc_bt: Rank Centrality + BT refine, "
+                "response lists top_k only). Omit to use SPEECHJUDGE_RANK_FULL_PAIRWISE_AGGREGATION."
             ),
         ),
     ) -> CreateJobResponse:
