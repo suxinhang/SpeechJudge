@@ -597,3 +597,5 @@ async def run_rank_job(
         with contextlib.suppress(Exception):
             await _delete_job_audio_files(store, job_id, items)
         shutil.rmtree(job_dir, ignore_errors=True)
+        with contextlib.suppress(Exception):
+            MODEL.release_ephemeral_cuda_cache()

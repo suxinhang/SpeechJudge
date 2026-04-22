@@ -22,7 +22,7 @@ class Settings:
     prepare_download_attempts: int
     #: Per-file decode_to_wav attempts (ffmpeg / librosa flakes).
     prepare_decode_attempts: int
-    #: Number of repeated votes per logical pairwise comparison.
+    #: Per logical pair: 1 = single model vote; 3 = adaptive 2-of-3 (default env: 1).
     pairwise_votes_per_pair: int
     #: Focus set size for refinement is derived from this Top-K target.
     rank_algorithm: str
@@ -76,13 +76,13 @@ def load_settings() -> Settings:
         prepare_decode_attempts = 3
     prepare_decode_attempts = max(1, min(prepare_decode_attempts, 10))
 
-    raw_pair_votes = os.environ.get("SPEECHJUDGE_PAIRWISE_VOTES_PER_PAIR", "3").strip()
+    raw_pair_votes = os.environ.get("SPEECHJUDGE_PAIRWISE_VOTES_PER_PAIR", "1").strip()
     try:
         pairwise_votes_per_pair = int(raw_pair_votes)
     except ValueError:
-        pairwise_votes_per_pair = 3
+        pairwise_votes_per_pair = 1
     if pairwise_votes_per_pair not in {1, 3}:
-        pairwise_votes_per_pair = 3
+        pairwise_votes_per_pair = 1
 
     raw_top_k = os.environ.get("SPEECHJUDGE_RANK_TOP_K", "20").strip()
     try:

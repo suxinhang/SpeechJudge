@@ -46,8 +46,8 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
         pairwise_votes_per_pair: int | None = Form(
             default=None,
             description=(
-                "Number of repeated model votes for each logical audio pair (1 or 3). "
-                "Omit to use server default from SPEECHJUDGE_PAIRWISE_VOTES_PER_PAIR."
+                "Votes per logical pair: 1 = one forward pass per pair; 3 = adaptive 2-of-3. "
+                "Omit to use server default from SPEECHJUDGE_PAIRWISE_VOTES_PER_PAIR (default 1)."
             ),
         ),
         prepare_parallel: int | None = Form(
@@ -99,7 +99,7 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
                 )
         pp = max(1, min(pp, 32))
 
-        pair_votes = int(getattr(settings, "pairwise_votes_per_pair", 3))
+        pair_votes = int(getattr(settings, "pairwise_votes_per_pair", 1))
         if pairwise_votes_per_pair is not None:
             pair_votes = int(pairwise_votes_per_pair)
             if pair_votes not in {1, 3}:

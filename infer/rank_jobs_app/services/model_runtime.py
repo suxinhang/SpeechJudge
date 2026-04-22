@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import threading
 from typing import Optional, Tuple
 
@@ -46,6 +47,30 @@ class SharedModel:
     @torch.inference_mode()
     def context(self):
         return torch.inference_mode()
+
+    def release_ephemeral_cuda_cache(self) -> None:
+        """After a job: sync GPU work, return CUDA caching allocator memory, run GC.
+
+        The shared weights stay loaded; this only helps reclaim temporary allocations
+        and Python cycles so the next job sees a cleaner VRAM footprint.
+        """
+        with self._lock:
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+            mps = getattr(torch.backends, "mps", None)
+            if mps is not None and mps.is_available():
+                try:
+                    torch.mps.empty_cache()
+                except Exception:
+                    pass
+        gc.collect()
 
 
 MODEL = SharedModel()
