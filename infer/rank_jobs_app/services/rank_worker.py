@@ -336,6 +336,11 @@ async def run_rank_job(
                 "pairwise_votes_per_pair": pair_votes,
                 "ranking_strategy": {
                     "algorithm": rank_config.algorithm,
+                    "aggregation": (
+                        "round_robin_points"
+                        if rank_config.algorithm == ALGORITHM_FULL_PAIRWISE
+                        else "elo"
+                    ),
                     "pair_votes_per_pair": pair_votes,
                     "top_k": rank_config.top_k,
                     "budget_multiplier": rank_config.budget_multiplier,
@@ -492,6 +497,7 @@ async def run_rank_job(
                 "source": it.item.source,
                 "url": it.item.url,
                 "rating": round(it.rating, 3),
+                "points": round(it.wins, 3),
                 "comparisons": actual_item_counts[it.item.id],
                 "ties": it.ties,
             }

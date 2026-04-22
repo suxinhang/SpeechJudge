@@ -19,11 +19,28 @@ from rank_jobs_app.core.ranking import (
     PHASE_TOP_K,
     RankingConfig,
     RankingItem,
+    collapse_pairwise_votes_adaptive,
+    collapse_pairwise_votes,
+    majority_vote,
 )
-from rank_jobs_app.services.ranking_engine import RankingEngine, _ItemState
+from rank_jobs_app.services.ranking_engine import RankingEngine, _ItemState, _PairStats
 
 
 class RankingEngineTests(unittest.TestCase):
+    def test_majority_vote_prefers_sign_with_most_votes(self) -> None:
+        self.assertEqual(majority_vote([1, -1, 1]), 1)
+        self.assertEqual(majority_vote([-1, 0, -1]), -1)
+        self.assertEqual(majority_vote([1, -1]), 0)
+
+    def test_collapse_pairwise_votes_groups_repeated_pair_results(self) -> None:
+        self.assertEqual(collapse_pairwise_votes([1, 1, -1, -1, 0, -1], 3), [1, -1])
+
+    def test_collapse_pairwise_votes_adaptive_skips_third_vote_when_first_two_match(self) -> None:
+        self.assertEqual(collapse_pairwise_votes_adaptive([1, 1, -1, 1], [-1]), [1, -1])
+
+    def test_collapse_pairwise_votes_adaptive_uses_third_vote_on_disagreement(self) -> None:
+        self.assertEqual(collapse_pairwise_votes_adaptive([1, -1, -1, -1], [1]), [1, -1])
+
     def test_engine_orders_strict_quality_scores(self) -> None:
         items = [
             RankingItem(id="a", wav_path="a.wav"),
@@ -223,6 +240,28 @@ class RankingEngineTests(unittest.TestCase):
             {("a", "b"), ("a", "c"), ("a", "d"), ("b", "c"), ("b", "d"), ("c", "d")},
         )
         self.assertEqual([entry.item.id for entry in result.items], ["a", "b", "c", "d"])
+
+    def test_full_pairwise_ranks_by_round_robin_points_before_elo(self) -> None:
+        items = {
+            "a": RankingItem(id="a", wav_path="a.wav"),
+            "b": RankingItem(id="b", wav_path="b.wav"),
+            "c": RankingItem(id="c", wav_path="c.wav"),
+        }
+        engine = RankingEngine(RankingConfig(algorithm=ALGORITHM_FULL_PAIRWISE))
+        states = {
+            "a": _ItemState(item=items["a"], rating=1400, comparisons=2, wins=2.0),
+            "b": _ItemState(item=items["b"], rating=1600, comparisons=2, wins=1.0),
+            "c": _ItemState(item=items["c"], rating=1500, comparisons=2, wins=0.0),
+        }
+        pair_stats = {
+            ("a", "b"): _PairStats(left_id="a", right_id="b", total=1, left_wins=1, right_wins=0, ties=0),
+            ("a", "c"): _PairStats(left_id="a", right_id="c", total=1, left_wins=1, right_wins=0, ties=0),
+            ("b", "c"): _PairStats(left_id="b", right_id="c", total=1, left_wins=1, right_wins=0, ties=0),
+        }
+
+        ranked = engine._rank_full_pairwise(states, pair_stats)
+
+        self.assertEqual([state.item.id for state in ranked], ["a", "b", "c"])
 
 
 if __name__ == "__main__":

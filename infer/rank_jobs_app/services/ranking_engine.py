@@ -151,9 +151,10 @@ class RankingEngine:
                     phase_counts[phase] += 1
                 emit_progress(phase)
 
-        ranked = sorted(
-            states.values(),
-            key=lambda state: (-state.rating, -state.wins, state.comparisons, state.item.id),
+        ranked = (
+            self._rank_full_pairwise(states, pair_stats)
+            if self.config.algorithm == ALGORITHM_FULL_PAIRWISE
+            else self._sorted_states(states)
         )
         comparisons_done = sum(phase_counts.values())
         comparisons_total = estimated_total_budget if comparisons_done >= estimated_total_budget else comparisons_done
@@ -488,6 +489,84 @@ class RankingEngine:
             if len(out) >= limit:
                 break
         return out
+
+    def _rank_full_pairwise(
+        self,
+        states: dict[str, _ItemState],
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> list[_ItemState]:
+        points = {item_id: state.wins for item_id, state in states.items()}
+        sonneborn = {item_id: 0.0 for item_id in states}
+        for (left_id, right_id), stats in pair_stats.items():
+            left_score, right_score = self._pair_scores_from_stats(left_id, right_id, stats)
+            sonneborn[left_id] += left_score * points[right_id]
+            sonneborn[right_id] += right_score * points[left_id]
+
+        grouped: dict[float, list[_ItemState]] = {}
+        for state in states.values():
+            grouped.setdefault(points[state.item.id], []).append(state)
+
+        ranked: list[_ItemState] = []
+        for point_value in sorted(grouped.keys(), reverse=True):
+            tied_group = grouped[point_value]
+            if len(tied_group) == 1:
+                ranked.extend(tied_group)
+                continue
+            tied_ids = {state.item.id for state in tied_group}
+            head_to_head = {
+                state.item.id: self._group_points(state.item.id, tied_ids, pair_stats) for state in tied_group
+            }
+            ranked.extend(
+                sorted(
+                    tied_group,
+                    key=lambda state: (
+                        -head_to_head[state.item.id],
+                        -sonneborn[state.item.id],
+                        -state.rating,
+                        state.item.id,
+                    ),
+                )
+            )
+        return ranked
+
+    def _group_points(
+        self,
+        item_id: str,
+        group_ids: set[str],
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> float:
+        total = 0.0
+        for other_id in group_ids:
+            if other_id == item_id:
+                continue
+            left_score, right_score = self._pair_scores(item_id, other_id, pair_stats)
+            total += left_score
+        return total
+
+    def _pair_scores(
+        self,
+        left_id: str,
+        right_id: str,
+        pair_stats: dict[tuple[str, str], _PairStats],
+    ) -> tuple[float, float]:
+        stats = self._pair_stats_for(pair_stats, left_id, right_id)
+        if stats is None:
+            return (0.0, 0.0)
+        return self._pair_scores_from_stats(left_id, right_id, stats)
+
+    @staticmethod
+    def _pair_scores_from_stats(left_id: str, right_id: str, stats: _PairStats) -> tuple[float, float]:
+        if stats.left_id == left_id and stats.right_id == right_id:
+            left_wins = stats.left_wins
+            right_wins = stats.right_wins
+        else:
+            left_wins = stats.right_wins
+            right_wins = stats.left_wins
+        if left_wins > right_wins:
+            return (1.0, 0.0)
+        if left_wins < right_wins:
+            return (0.0, 1.0)
+        return (0.5, 0.5)
 
     @staticmethod
     def _sorted_states(states: dict[str, _ItemState]) -> list[_ItemState]:
