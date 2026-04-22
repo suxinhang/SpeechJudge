@@ -1,15 +1,15 @@
 """Upload-test rank_jobs_app: by default **all** audios under a directory (full run).
 
-Default data directory:
-    D:\\Downloads\\泰语
+Edit the ``SMOKE_*`` defaults below (or use CLI flags) before a run. Rank overrides are sent as
+form fields ``rank_algorithm`` and ``full_pairwise_aggregation`` (server must implement current
+``/jobs/rank``). Use value ``server`` for either flag to omit that field and rely on host env.
 
-Use ``--sample-size N`` for a quick random subset only.
-
-Example::
+Examples::
 
     python test/smoke_local_audio_upload.py --base-url https://....trycloudflare.com
     python test/smoke_local_audio_upload.py --sample-size 3
     python test/smoke_local_audio_upload.py --urls-file test/date.txt --base-url https://....trycloudflare.com
+    python test/smoke_local_audio_upload.py --urls-file test/date.txt --pair-votes-ramp 1,3
 """
 
 from __future__ import annotations
@@ -28,10 +28,32 @@ from typing import Iterable
 import requests
 
 
-DEFAULT_BASE_URL = "https://showtimes-interface-states-technological.trycloudflare.com/"
-DEFAULT_DATA_DIR = "D:\Downloads\泰语"
-DEFAULT_RESULT_DIR = Path(__file__).resolve().parent / "results"
-DEFAULT_TARGET_TEXT = "ตั้งแต่อายุยังน้อย คิโยซากิและไมค์ เพื่อนของเขามีความปรารถนาอย่างแรงกล้าที่จะกลายเป็นคนร่ำรวย อย่างไรก็ตาม ในตอนแรกพวกเขาไม่รู้ว่าจะทำอย่างไรจึงจะบรรลุเป้าหมายนี้ได้ เมื่อพวกเขาไปขอคำแนะนำจากพ่อของตนเอง พวกเขากลับได้รับคำตอบที่แตกต่างกันอย่างสิ้นเชิง พ่อที่ยากจนของคิโยซากิซึ่งมีการศึกษาดีแต่มีปัญหาทางการเงิน แนะนำให้พวกเขาตั้งใจเรียนและหางานที่มั่นคงทำ แม้คำแนะนำแบบดั้งเดิมนี้จะมาจากความหวังดี แต่มันมักทำให้ผู้คนติดอยู่ในวงจรของการทำงานหนักเพื่อเงิน โดยไม่สามารถสร้างความมั่งคั่งที่แท้จริงได้พ่อที่ยากจนของคิโยซากิเป็นตัวแทนของแนวคิดแบบดั้งเดิมที่ผู้คนจำนวนมากยังคงยึดถือมาจนถึงทุกวันนี้ แนวคิดนี้มักเกิดจากความกลัวต่อความไม่มั่นคงทางการเงิน และความเชื่อว่าการมีการศึกษาที่ดีและงานที่มั่นคงคือกุญแจสู่ความสำเร็จ อย่างไรก็ตาม คิโยซากิอธิบายว่าแนวทางนี้อาจทำให้ผู้คนติดอยู่ในสิ่งที่เรียกว่า “วงจรหนูวิ่ง” หรือ rat race ซึ่งหมายถึงการทำงานอย่างหนักเพื่อรับเงินเดือน แต่เงินจำนวนมากกลับถูกใช้ไปกับภาษี ค่าบิล และค่าใช้จ่ายต่าง ๆ ในชีวิตประจำวัน ดังนั้น แม้ว่าพวกเขาอาจหลีกเลี่ยงความยากจนได้ แต่ก็ยังไม่สามารถสะสมความมั่งคั่งที่แท้จริงได้เลย"
+# ---------------------------------------------------------------------------
+# 联调默认：改这里即可；CLI 参数会覆盖对应项。
+# ---------------------------------------------------------------------------
+SMOKE_DEFAULT_BASE_URL = "https://bottles-possess-moss-austin.trycloudflare.com/"
+SMOKE_DEFAULT_DATA_DIR = r"D:\Downloads\泰语"
+SMOKE_DEFAULT_RESULT_DIR = Path(__file__).resolve().parent / "results"
+SMOKE_DEFAULT_TARGET_TEXT = (
+    "ตั้งแต่อายุยังน้อย คิโยซากิและไมค์ เพื่อนของเขามีความปรารถนาอย่างแรงกล้าที่จะกลายเป็นคนร่ำรวย อย่างไรก็ตาม ในตอนแรกพวกเขาไม่รู้ว่าจะทำอย่างไรจึงจะบรรลุเป้าหมายนี้ได้ เมื่อพวกเขาไปขอคำแนะนำจากพ่อของตนเอง พวกเขากลับได้รับคำตอบที่แตกต่างกันอย่างสิ้นเชิง พ่อที่ยากจนของคิโยซากิซึ่งมีการศึกษาดีแต่มีปัญหาทางการเงิน แนะนำให้พวกเขาตั้งใจเรียนและหางานที่มั่นคงทำ แม้คำแนะนำแบบดั้งเดิมนี้จะมาจากความหวังดี แต่มันมักทำให้ผู้คนติดอยู่ในวงจรของการทำงานหนักเพื่อเงิน โดยไม่สามารถสร้างความมั่งคั่งที่แท้จริงได้พ่อที่ยากจนของคิโยซากิเป็นตัวแทนของแนวคิดแบบดั้งเดิมที่ผู้คนจำนวนมากยังคงยึดถือมาจนถึงทุกวันนี้ แนวคิดนี้มักเกิดจากความกลัวต่อความไม่มั่นคงทางการเงิน และความเชื่อว่าการมีการศึกษาที่ดีและงานที่มั่นคงคือกุญแจสู่ความสำเร็จ อย่างไรก็ตาม คิโยซากิอธิบายว่าแนวทางนี้อาจทำให้ผู้คนติดอยู่ในสิ่งที่เรียกว่า “วงจรหนูวิ่ง” หรือ rat race ซึ่งหมายถึงการทำงานอย่างหนักเพื่อรับเงินเดือน แต่เงินจำนวนมากกลับถูกใช้ไปกับภาษี ค่าบิล และค่าใช้จ่ายต่าง ๆ ในชีวิตประจำวัน ดังนั้น แม้ว่าพวกเขาอาจหลีกเลี่ยงความยากจนได้ แต่ก็ยังไม่สามารถสะสมความมั่งคั่งที่แท้จริงได้เลย"
+)
+SMOKE_DEFAULT_SAMPLE_SIZE: int | None = None
+SMOKE_DEFAULT_SEED = 42
+SMOKE_DEFAULT_SUBMIT_TIMEOUT = 1800
+SMOKE_DEFAULT_JOB_TIMEOUT = 28800
+SMOKE_DEFAULT_POLL_INTERVAL = 5.0
+SMOKE_DEFAULT_UPLOAD_HEARTBEAT_SEC = 30.0
+SMOKE_DEFAULT_PAIRWISE_PARALLEL: int | None = None
+SMOKE_DEFAULT_PAIR_VOTES_PER_PAIR = 1
+# POST /jobs/rank：full_pairwise + bradley_terry 做最终排序；设为 "server" 则不传该字段（用服务端环境变量）
+SMOKE_DEFAULT_RANK_ALGORITHM = "full_pairwise"
+SMOKE_DEFAULT_FULL_PAIRWISE_AGGREGATION = "bradley_terry"
+
+# 兼容旧常量名（供 argparse default 使用）
+DEFAULT_BASE_URL = SMOKE_DEFAULT_BASE_URL
+DEFAULT_DATA_DIR = SMOKE_DEFAULT_DATA_DIR
+DEFAULT_RESULT_DIR = SMOKE_DEFAULT_RESULT_DIR
+DEFAULT_TARGET_TEXT = SMOKE_DEFAULT_TARGET_TEXT
 
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".webm"}
 
@@ -99,6 +121,9 @@ def submit_job_urls(
     timeout: int,
     *,
     pairwise_parallel: int | None = None,
+    pairwise_votes_per_pair: int | None = None,
+    rank_algorithm: str | None = None,
+    full_pairwise_aggregation: str | None = None,
 ) -> str:
     body = json.dumps(urls, ensure_ascii=False)
     print(
@@ -111,6 +136,12 @@ def submit_job_urls(
     }
     if pairwise_parallel is not None:
         data["pairwise_parallel"] = str(int(pairwise_parallel))
+    if pairwise_votes_per_pair is not None:
+        data["pairwise_votes_per_pair"] = str(int(pairwise_votes_per_pair))
+    if rank_algorithm is not None:
+        data["rank_algorithm"] = str(rank_algorithm)
+    if full_pairwise_aggregation is not None:
+        data["full_pairwise_aggregation"] = str(full_pairwise_aggregation)
     resp = requests.post(
         f"{base_url.rstrip('/')}/jobs/rank",
         data=data,
@@ -133,6 +164,9 @@ def submit_job(
     *,
     upload_heartbeat_sec: float = 30.0,
     pairwise_parallel: int | None = None,
+    pairwise_votes_per_pair: int | None = None,
+    rank_algorithm: str | None = None,
+    full_pairwise_aggregation: str | None = None,
 ) -> str:
     total_bytes = sum(p.stat().st_size for p in files)
     mib = total_bytes / (1024 * 1024)
@@ -167,6 +201,12 @@ def submit_job(
         post_data: dict[str, str] = {"target_text": target_text}
         if pairwise_parallel is not None:
             post_data["pairwise_parallel"] = str(int(pairwise_parallel))
+        if pairwise_votes_per_pair is not None:
+            post_data["pairwise_votes_per_pair"] = str(int(pairwise_votes_per_pair))
+        if rank_algorithm is not None:
+            post_data["rank_algorithm"] = str(rank_algorithm)
+        if full_pairwise_aggregation is not None:
+            post_data["full_pairwise_aggregation"] = str(full_pairwise_aggregation)
         try:
             resp = requests.post(
                 f"{base_url.rstrip('/')}/jobs/rank",
@@ -233,6 +273,39 @@ def _parse_dt(value: object) -> datetime | None:
         return None
 
 
+def parse_pair_votes_ramp(raw: str | None) -> list[int] | None:
+    """Parse ``'1,3'`` or ``'1，3'`` (fullwidth comma) into ``[1, 3]``. Empty/None → None. Each entry must be 1 or 3 (server API)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    # IME / copy-paste: fullwidth comma U+FF0C, ideographic comma U+3001
+    s = s.replace("\uff0c", ",").replace("\u3001", ",")
+    if not s:
+        return None
+    out: list[int] = []
+    for part in s.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            v = int(p)
+        except ValueError as exc:
+            raise ValueError(f"invalid integer in --pair-votes-ramp: {p!r}") from exc
+        if v not in {1, 3}:
+            raise ValueError(f"--pair-votes-ramp entries must be 1 or 3, got {v}")
+        out.append(v)
+    return out or None
+
+
+def estimate_pairwise_desc(logical_pairs: int, pair_votes: int) -> str:
+    if int(pair_votes) <= 1:
+        return f"exact={logical_pairs} pairs x 1 vote = {logical_pairs} model comparisons on server"
+    return (
+        f"adaptive 2-of-3 voting, exact={logical_pairs} logical pairs, "
+        f"model comparisons range={logical_pairs * 2}-{logical_pairs * 3}"
+    )
+
+
 def annotate_result_timing(result: dict) -> dict:
     created_at = _parse_dt(result.get("created_at"))
     started_at = _parse_dt(result.get("started_at"))
@@ -256,11 +329,11 @@ def main() -> int:
             "or upload local files from --data-dir."
         ),
     )
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Service base URL")
+    parser.add_argument("--base-url", default=SMOKE_DEFAULT_BASE_URL, help="Service base URL")
     parser.add_argument(
         "--result-dir",
         type=Path,
-        default=DEFAULT_RESULT_DIR,
+        default=SMOKE_DEFAULT_RESULT_DIR,
         help="Directory where the final polled job JSON will be saved locally",
     )
     parser.add_argument(
@@ -269,45 +342,102 @@ def main() -> int:
         default=None,
         help="Text file with one http(s) URL per line; submits urls_json (server downloads). E.g. test/date.txt",
     )
-    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Directory to recursively scan (ignored if --urls-file)")
-    parser.add_argument("--target-text", default=DEFAULT_TARGET_TEXT, help="Same transcript for all selected audios")
+    parser.add_argument(
+        "--data-dir", default=SMOKE_DEFAULT_DATA_DIR, help="Directory to recursively scan (ignored if --urls-file)"
+    )
+    parser.add_argument("--target-text", default=SMOKE_DEFAULT_TARGET_TEXT, help="Same transcript for all selected audios")
     parser.add_argument(
         "--sample-size",
         type=int,
-        default=None,
+        default=SMOKE_DEFAULT_SAMPLE_SIZE,
         metavar="N",
         help="If set, randomly sample N files; default uploads every audio found",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed when --sample-size is used")
+    parser.add_argument("--seed", type=int, default=SMOKE_DEFAULT_SEED, help="Random seed when --sample-size is used")
     parser.add_argument(
         "--submit-timeout",
         type=int,
-        default=1800,
+        default=SMOKE_DEFAULT_SUBMIT_TIMEOUT,
         help="Timeout seconds for POST /jobs/rank (many files need more)",
     )
     parser.add_argument(
         "--job-timeout",
         type=int,
-        default=28800,
-        help="Timeout seconds while polling (ranking now targets merge-sort-like O(n log n) comparisons)",
+        default=SMOKE_DEFAULT_JOB_TIMEOUT,
+        help="Timeout seconds while polling (server default is now full pairwise ranking)",
     )
-    parser.add_argument("--poll-interval", type=float, default=5.0, help="Polling interval seconds")
+    parser.add_argument(
+        "--poll-interval", type=float, default=SMOKE_DEFAULT_POLL_INTERVAL, help="Polling interval seconds"
+    )
     parser.add_argument(
         "--upload-heartbeat-sec",
         type=float,
-        default=30.0,
+        default=SMOKE_DEFAULT_UPLOAD_HEARTBEAT_SEC,
         help="Print a line every N seconds while POST body is uploading (no per-chunk API in requests)",
     )
     parser.add_argument(
         "--pairwise-parallel",
         type=int,
-        default=None,
+        default=SMOKE_DEFAULT_PAIRWISE_PARALLEL,
         metavar="N",
         help="POST form pairwise_parallel (1–32): max pairs per batched GPU forward; omit for server default",
+    )
+    parser.add_argument(
+        "--pair-votes-per-pair",
+        type=int,
+        default=SMOKE_DEFAULT_PAIR_VOTES_PER_PAIR,
+        metavar="N",
+        help="POST form pairwise_votes_per_pair (1 or 3): 1 = one model call per pair; 3 = adaptive 2-of-3; default=1",
+    )
+    parser.add_argument(
+        "--pair-votes-ramp",
+        default=None,
+        metavar="LIST",
+        help=(
+            "Comma-separated votes per pair (each 1 or 3): run that many separate rank jobs in order on the same "
+            "URLs or files, e.g. 1,3 = one full job at 1 vote/pair then another at 2-of-3. Use ASCII comma or "
+            "fullwidth ， between numbers. If set, each pass uses this sequence instead of --pair-votes-per-pair."
+        ),
+    )
+    parser.add_argument(
+        "--rank-algorithm",
+        default=SMOKE_DEFAULT_RANK_ALGORITHM,
+        choices=("full_pairwise", "phased_elo", "server"),
+        help="POST rank_algorithm; use 'server' to omit and use host SPEECHJUDGE_RANK_ALGORITHM",
+    )
+    parser.add_argument(
+        "--full-pairwise-aggregation",
+        default=SMOKE_DEFAULT_FULL_PAIRWISE_AGGREGATION,
+        choices=("round_robin_points", "bradley_terry", "bt", "rank_centrality_bt", "rc_bt", "server"),
+        help="POST full_pairwise_aggregation (full_pairwise jobs); 'server' omits field for host env default",
     )
     args = parser.parse_args()
     if args.pairwise_parallel is not None and not (1 <= int(args.pairwise_parallel) <= 32):
         parser.error("--pairwise-parallel must be between 1 and 32")
+    try:
+        votes_ramp = parse_pair_votes_ramp(getattr(args, "pair_votes_ramp", None))
+    except ValueError as exc:
+        parser.error(str(exc))
+    if votes_ramp is not None:
+        votes_sequence = votes_ramp
+    else:
+        if int(args.pair_votes_per_pair) not in {1, 3}:
+            parser.error("--pair-votes-per-pair must be either 1 or 3")
+        votes_sequence = [int(args.pair_votes_per_pair)]
+
+    post_rank_algorithm = None if args.rank_algorithm == "server" else str(args.rank_algorithm)
+    post_full_pairwise_aggregation = (
+        None if args.full_pairwise_aggregation == "server" else str(args.full_pairwise_aggregation)
+    )
+    print(
+        f"[info] POST overrides: rank_algorithm={post_rank_algorithm or '(omit→server env)'} "
+        f"full_pairwise_aggregation={post_full_pairwise_aggregation or '(omit→server env)'}",
+        flush=True,
+    )
+
+    urls: list[str] | None = None
+    chosen: list[Path] | None = None
+    mode_label = ""
 
     if args.urls_file is not None:
         try:
@@ -316,16 +446,28 @@ def main() -> int:
             print(f"[error] {exc}", file=sys.stderr)
             return 1
         n = len(urls)
-        est = n * ((n - 1).bit_length()) if n > 1 else 0
+        logical_pairs = n * (n - 1) // 2 if n > 1 else 0
+        first_votes = votes_sequence[0]
+        est_desc = estimate_pairwise_desc(logical_pairs, first_votes)
         print(
             f"[info] mode=urls-file ({args.urls_file}), {n} URLs, "
-            f"roughly O(n log n), est<={est} pairwise comparisons on server",
+            f"full pairwise mode, {est_desc}",
             flush=True,
         )
+        if len(votes_sequence) > 1:
+            print(
+                f"[info] multi-pass --pair-votes-ramp: {votes_sequence} "
+                f"({len(votes_sequence)} separate rank jobs on the same URLs)",
+                flush=True,
+            )
         if n > 40:
             print(
-                "[info] sort phase now uses a lower-comparison ranking path, so large jobs should be much faster "
-                "than the earlier odd-even bubble version. Runtime is still dominated by model call cost.",
+                (
+                    "[info] full pairwise mode compares every unique pair once, so runtime grows quadratically "
+                    "with the number of audios. Runtime is still dominated by model call cost."
+                    if all(int(v) <= 1 for v in votes_sequence)
+                    else "[info] adaptive 2-of-3 voting always spends 2 votes per pair and only adds the 3rd vote when the first two disagree."
+                ),
                 flush=True,
             )
         if n == 0:
@@ -335,31 +477,32 @@ def main() -> int:
             print(f"  {i}. {u}", flush=True)
         if len(urls) > 15:
             print(f"  ... ({len(urls) - 15} more)", flush=True)
-        job_id = submit_job_urls(
-            args.base_url,
-            args.target_text,
-            urls,
-            args.submit_timeout,
-            pairwise_parallel=args.pairwise_parallel,
-        )
     else:
         data_dir = Path(args.data_dir)
         all_audios = collect_audios(data_dir)
         print(f"[info] found {len(all_audios)} audios under: {data_dir}", flush=True)
         if args.sample_size is None:
             chosen = sorted(all_audios, key=lambda p: str(p).lower())
-            mode = "full (all files)"
+            mode_label = "full (all files)"
         else:
             if args.sample_size < 1:
                 parser.error("--sample-size must be >= 1")
             chosen = choose_random(all_audios, args.sample_size, args.seed)
-            mode = f"sample n={args.sample_size}"
+            mode_label = f"sample n={args.sample_size}"
         n = len(chosen)
-        est = n * ((n - 1).bit_length()) if n > 1 else 0
+        logical_pairs = n * (n - 1) // 2 if n > 1 else 0
+        first_votes = votes_sequence[0]
+        est_desc = estimate_pairwise_desc(logical_pairs, first_votes)
         print(
-            f"[info] mode={mode}, will upload {n} file(s), roughly O(n log n), est<={est} pairwise comparisons on server",
+            f"[info] mode={mode_label}, will upload {n} file(s), full pairwise mode, {est_desc}",
             flush=True,
         )
+        if len(votes_sequence) > 1:
+            print(
+                f"[info] multi-pass --pair-votes-ramp: {votes_sequence} "
+                f"({len(votes_sequence)} separate rank jobs on the same files)",
+                flush=True,
+            )
         if n == 0:
             print("[error] no audio files matched under --data-dir", file=sys.stderr)
             return 1
@@ -367,31 +510,55 @@ def main() -> int:
         for i, p in enumerate(chosen, start=1):
             print(f"  {i}. {p}", flush=True)
 
-        job_id = submit_job(
-            args.base_url,
-            args.target_text,
-            chosen,
-            args.submit_timeout,
-            upload_heartbeat_sec=args.upload_heartbeat_sec,
-            pairwise_parallel=args.pairwise_parallel,
-        )
-    print(f"[info] submitted job_id={job_id}", flush=True)
-    result = annotate_result_timing(poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval))
+    assert urls is not None or chosen is not None
 
-    print("[result]", flush=True)
-    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
-    timing = result.get("timing_summary")
-    if isinstance(timing, dict):
-        queue_to_finish = timing.get("queue_to_finish_seconds")
-        run_seconds = timing.get("run_seconds")
-        if isinstance(queue_to_finish, (int, float)):
-            print(f"[info] total elapsed: {float(queue_to_finish):.3f}s", flush=True)
-        if isinstance(run_seconds, (int, float)):
-            print(f"[info] run elapsed: {float(run_seconds):.3f}s", flush=True)
-    saved_path = save_result_json(Path(args.result_dir), job_id, result)
-    print(f"[info] saved result json: {saved_path}", flush=True)
-    if str(result.get("status")) != "succeeded":
-        return 2
+    for pass_i, pair_votes in enumerate(votes_sequence, start=1):
+        if len(votes_sequence) > 1:
+            print(
+                f"[info] pass {pass_i}/{len(votes_sequence)}: pairwise_votes_per_pair={pair_votes}",
+                flush=True,
+            )
+        if urls is not None:
+            job_id = submit_job_urls(
+                args.base_url,
+                args.target_text,
+                urls,
+                args.submit_timeout,
+                pairwise_parallel=args.pairwise_parallel,
+                pairwise_votes_per_pair=pair_votes,
+                rank_algorithm=post_rank_algorithm,
+                full_pairwise_aggregation=post_full_pairwise_aggregation,
+            )
+        else:
+            assert chosen is not None
+            job_id = submit_job(
+                args.base_url,
+                args.target_text,
+                chosen,
+                args.submit_timeout,
+                upload_heartbeat_sec=args.upload_heartbeat_sec,
+                pairwise_parallel=args.pairwise_parallel,
+                pairwise_votes_per_pair=pair_votes,
+                rank_algorithm=post_rank_algorithm,
+                full_pairwise_aggregation=post_full_pairwise_aggregation,
+            )
+        print(f"[info] submitted job_id={job_id}", flush=True)
+        result = annotate_result_timing(poll_job(args.base_url, job_id, args.job_timeout, args.poll_interval))
+
+        print("[result]", flush=True)
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+        timing = result.get("timing_summary")
+        if isinstance(timing, dict):
+            queue_to_finish = timing.get("queue_to_finish_seconds")
+            run_seconds = timing.get("run_seconds")
+            if isinstance(queue_to_finish, (int, float)):
+                print(f"[info] total elapsed: {float(queue_to_finish):.3f}s", flush=True)
+            if isinstance(run_seconds, (int, float)):
+                print(f"[info] run elapsed: {float(run_seconds):.3f}s", flush=True)
+        saved_path = save_result_json(Path(args.result_dir), job_id, result)
+        print(f"[info] saved result json: {saved_path}", flush=True)
+        if str(result.get("status")) != "succeeded":
+            return 2
     return 0
 
 

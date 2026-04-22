@@ -12,6 +12,8 @@ if str(INFER_DIR) not in sys.path:
 from rank_jobs_app.core.ranking import (
     ALGORITHM_FULL_PAIRWISE,
     ALGORITHM_PHASED_ELO,
+    FULL_PAIRWISE_AGG_BRADLEY_TERRY,
+    FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT,
     PHASE_CHALLENGE,
     PHASE_EXPLOIT,
     PHASE_EXPLORE,
@@ -262,6 +264,70 @@ class RankingEngineTests(unittest.TestCase):
         ranked = engine._rank_full_pairwise(states, pair_stats)
 
         self.assertEqual([state.item.id for state in ranked], ["a", "b", "c"])
+
+    def test_bradley_terry_mm_is_symmetric_on_three_cycle(self) -> None:
+        pair_stats = {
+            ("a", "b"): _PairStats(left_id="a", right_id="b", total=1, left_wins=1, right_wins=0, ties=0),
+            ("a", "c"): _PairStats(left_id="a", right_id="c", total=1, left_wins=0, right_wins=1, ties=0),
+            ("b", "c"): _PairStats(left_id="b", right_id="c", total=1, left_wins=1, right_wins=0, ties=0),
+        }
+        gamma = RankingEngine._bradley_terry_mm(["a", "b", "c"], pair_stats)
+        self.assertAlmostEqual(gamma["a"], gamma["b"], places=5)
+        self.assertAlmostEqual(gamma["b"], gamma["c"], places=5)
+
+    def test_full_pairwise_bradley_terry_orders_transitive_strengths(self) -> None:
+        items = [
+            RankingItem(id="a", wav_path="a.wav"),
+            RankingItem(id="b", wav_path="b.wav"),
+            RankingItem(id="c", wav_path="c.wav"),
+        ]
+        strength = {"a": 3, "b": 2, "c": 1}
+
+        def compare_batch(batch: list[tuple[RankingItem, RankingItem]]) -> list[int]:
+            out: list[int] = []
+            for left, right in batch:
+                diff = strength[left.id] - strength[right.id]
+                out.append(1 if diff > 0 else (-1 if diff < 0 else 0))
+            return out
+
+        engine = RankingEngine(
+            RankingConfig(
+                algorithm=ALGORITHM_FULL_PAIRWISE,
+                full_pairwise_aggregation=FULL_PAIRWISE_AGG_BRADLEY_TERRY,
+            )
+        )
+        result = engine.run(items=items, compare_batch=compare_batch, batch_size=2)
+        self.assertEqual([entry.item.id for entry in result.items], ["a", "b", "c"])
+        self.assertGreater(result.items[0].rating, result.items[1].rating)
+        self.assertGreater(result.items[1].rating, result.items[2].rating)
+
+    def test_full_pairwise_rank_centrality_bt_orders_transitive_strengths(self) -> None:
+        items = [
+            RankingItem(id="a", wav_path="a.wav"),
+            RankingItem(id="b", wav_path="b.wav"),
+            RankingItem(id="c", wav_path="c.wav"),
+        ]
+        strength = {"a": 3, "b": 2, "c": 1}
+
+        def compare_batch(batch: list[tuple[RankingItem, RankingItem]]) -> list[int]:
+            out: list[int] = []
+            for left, right in batch:
+                diff = strength[left.id] - strength[right.id]
+                out.append(1 if diff > 0 else (-1 if diff < 0 else 0))
+            return out
+
+        engine = RankingEngine(
+            RankingConfig(
+                algorithm=ALGORITHM_FULL_PAIRWISE,
+                full_pairwise_aggregation=FULL_PAIRWISE_AGG_RANK_CENTRALITY_BT,
+            )
+        )
+        result = engine.run(items=items, compare_batch=compare_batch, batch_size=2)
+        self.assertEqual([entry.item.id for entry in result.items], ["a", "b", "c"])
+        self.assertIsNotNone(result.item_aux)
+        assert result.item_aux is not None
+        self.assertIn("rank_centrality", result.item_aux["a"])
+        self.assertIn("bt_rating", result.item_aux["a"])
 
 
 if __name__ == "__main__":
