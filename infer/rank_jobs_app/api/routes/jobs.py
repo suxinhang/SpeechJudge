@@ -14,6 +14,7 @@ from ...services.rank_worker import (
     _job_rank_algorithm,
     run_rank_job,
 )
+from ...services.triplet_screen_worker import run_triplet_screen_job
 
 
 class CreateJobResponse(BaseModel):
@@ -168,6 +169,116 @@ def build_jobs_router(*, store: JsonJobStore, settings) -> APIRouter:
             prepare_decode_attempts=prep_dec,
             rank_algorithm=rank_algorithm,
             full_pairwise_aggregation=full_pairwise_aggregation,
+        )
+        return CreateJobResponse(job_id=job_id)
+
+    @router.post("/jobs/triplet_screen", response_model=CreateJobResponse)
+    async def create_triplet_screen_job(
+        background_tasks: BackgroundTasks,
+        target_text: str = Form(..., min_length=1),
+        urls_json: str | None = Form(
+            default=None,
+            description='JSON array of strings, e.g. ["https://a/a.mp3","https://b/b.wav"]',
+        ),
+        audio_files: list[UploadFile] | None = File(default=None),
+        shuffle_seed: str | None = Form(
+            default=None,
+            description="Optional int seed for shuffling inputs before grouping; omit for random server seed.",
+        ),
+        group_size: str | None = Form(
+            default=None,
+            description="Items per group (default 3). Last group may be smaller (1–2 items).",
+        ),
+        prepare_parallel: int | None = Form(
+            default=None,
+            description="Prepare phase: max concurrent URL downloads / upload transcodes (1–32).",
+        ),
+    ) -> CreateJobResponse:
+        urls: list[str] = []
+        if urls_json:
+            try:
+                parsed = json.loads(urls_json)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=400, detail=f"urls_json is not valid JSON: {exc}") from exc
+            if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
+                raise HTTPException(status_code=400, detail="urls_json must be a JSON array of strings")
+            urls = [u.strip() for u in parsed if u.strip()]
+
+        if not urls and not audio_files:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide urls_json and/or audio_files (multipart uploads).",
+            )
+
+        seed_parsed: int | None = None
+        if shuffle_seed is not None and str(shuffle_seed).strip():
+            try:
+                seed_parsed = int(str(shuffle_seed).strip(), 10)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="shuffle_seed must be a base-10 integer") from exc
+
+        gs = 3
+        if group_size is not None and str(group_size).strip():
+            try:
+                gs = int(str(group_size).strip(), 10)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="group_size must be an integer") from exc
+        if gs < 1 or gs > 64:
+            raise HTTPException(status_code=400, detail="group_size must be between 1 and 64")
+
+        prep = int(getattr(settings, "prepare_parallel", 8))
+        if prepare_parallel is not None:
+            prep = int(prepare_parallel)
+            if prep < 1 or prep > 32:
+                raise HTTPException(
+                    status_code=400,
+                    detail="prepare_parallel must be between 1 and 32",
+                )
+        prep = max(1, min(prep, 32))
+
+        prep_dl = int(getattr(settings, "prepare_download_attempts", 5))
+        prep_dec = int(getattr(settings, "prepare_decode_attempts", 3))
+
+        doc: dict[str, Any] = {
+            "status": "queued",
+            "phase": "queued",
+            "message": "Queued (triplet_screen)",
+            "created_at": _utcnow(),
+            "updated_at": _utcnow(),
+            "job_kind": "triplet_screen",
+            "target_text": target_text,
+            "urls": urls,
+            "n_urls": len(urls),
+            "n_uploads": len(audio_files or []),
+            "prepare_parallel": prep,
+            "prepare_download_attempts": prep_dl,
+            "prepare_decode_attempts": prep_dec,
+            "triplet_screen": {
+                "shuffle_seed": seed_parsed,
+                "group_size": gs,
+            },
+        }
+        try:
+            job_id = await store.insert_job(doc)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Cannot write job state: {exc}",
+            ) from exc
+
+        background_tasks.add_task(
+            run_triplet_screen_job,
+            store=store,
+            job_id=job_id,
+            settings=settings,
+            target_text=target_text,
+            urls=urls,
+            uploads=audio_files,
+            prepare_parallel=prep,
+            prepare_download_attempts=prep_dl,
+            prepare_decode_attempts=prep_dec,
+            shuffle_seed=seed_parsed,
+            group_size=gs,
         )
         return CreateJobResponse(job_id=job_id)
 
