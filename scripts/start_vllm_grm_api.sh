@@ -8,11 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ======================
-# 1. conda 环境（可选）
+# 1. conda 环境（默认必需）
 # ======================
 if [[ "${SKIP_CONDA_ACTIVATE:-0}" != "1" ]]; then
   if [[ -z "${SPEECHJUDGE_CONDA_SH:-}" ]] && [[ -f "/root/miniconda3/etc/profile.d/conda.sh" ]]; then
     SPEECHJUDGE_CONDA_SH="/root/miniconda3/etc/profile.d/conda.sh"
+  fi
+
+  if [[ -z "${SPEECHJUDGE_CONDA_SH:-}" ]] || [[ ! -f "$SPEECHJUDGE_CONDA_SH" ]]; then
+    echo "[ERROR] conda.sh not found. Set SPEECHJUDGE_CONDA_SH or export SKIP_CONDA_ACTIVATE=1 if you really want to skip."
+    exit 1
   fi
 
   if [[ -n "${SPEECHJUDGE_CONDA_SH:-}" ]] && [[ -f "$SPEECHJUDGE_CONDA_SH" ]]; then
@@ -20,15 +25,19 @@ if [[ "${SKIP_CONDA_ACTIVATE:-0}" != "1" ]]; then
     source "$SPEECHJUDGE_CONDA_SH"
   fi
 
-  if command -v conda >/dev/null 2>&1; then
-    _conda_env="${SPEECHJUDGE_CONDA_ENV:-speechjudge}"
-    set +e
-    conda activate "$_conda_env"
-    _conda_rc=$?
-    set -e
-    if [[ "$_conda_rc" -ne 0 ]]; then
-      echo "[WARN] conda activate ${_conda_env} failed; continue with current env."
-    fi
+  if ! command -v conda >/dev/null 2>&1; then
+    echo "[ERROR] conda command not available after sourcing $SPEECHJUDGE_CONDA_SH"
+    exit 1
+  fi
+
+  _conda_env="${SPEECHJUDGE_CONDA_ENV:-speechjudge}"
+  set +e
+  conda activate "$_conda_env"
+  _conda_rc=$?
+  set -e
+  if [[ "$_conda_rc" -ne 0 ]]; then
+    echo "[ERROR] conda activate ${_conda_env} failed."
+    exit 1
   fi
 fi
 
