@@ -16,6 +16,44 @@ import httpx
 DEFAULT_BASE = "http://127.0.0.1:8000"
 DEFAULT_TARGET = "smoke triplet screen"
 
+# 其它 SpeechJudge 网关的 /health 常带这些字段；vllm_grm_api 只有 {"status": "ok"}。
+_WRONG_HEALTH_MARKERS = (
+    "default_mode",
+    "model_path",
+    "loaded_at",
+    "recommended_request_max_new_tokens",
+    "cuda_device",
+)
+
+
+def assert_vllm_grm_job_api_health(client: httpx.Client, base: str) -> None:
+    try:
+        r = client.get(f"{base}/health")
+    except httpx.ConnectError as e:
+        raise SystemExit(
+            f"Cannot connect to {base}/health ({e}).\n"
+            "Nothing is listening on that host:port (WinError 10061 = connection refused).\n\n"
+            "Start vllm_grm_api first, e.g. in Git Bash from repo root:\n"
+            "  SPEECHJUDGE_API_PORT=8001 bash scripts/start_vllm_grm_api_local.sh\n"
+            "Then (same port):\n"
+            f"  python test/test_vllm_grm_api.py --base-url {base}\n"
+        ) from e
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, dict):
+        raise SystemExit(f"/health returned non-object: {data!r}")
+    if data.get("status") == "ok" and not any(k in data for k in _WRONG_HEALTH_MARKERS):
+        print("[health]", data)
+        return
+    print("[health]", data, file=sys.stderr)
+    raise SystemExit(
+        "This server is not vllm_grm_api (no SpeechJudge GRM Job API on this URL).\n"
+        "/jobs will 404. Your port is likely another app (e.g. rank / inference on :8000).\n\n"
+        "Fix: start the job API on a free port, then point this script there, e.g.\n"
+        "  SPEECHJUDGE_API_PORT=8001 bash scripts/start_vllm_grm_api_local.sh\n"
+        "  python test/test_vllm_grm_api.py --base-url http://127.0.0.1:8001\n"
+    )
+
 
 def load_urls(path: Path) -> list[str]:
     lines: list[str] = []
@@ -68,9 +106,7 @@ def main() -> None:
 
     base = args.base_url.rstrip("/")
     with httpx.Client(timeout=60.0) as client:
-        r = client.get(f"{base}/health")
-        r.raise_for_status()
-        print("[health]", r.json())
+        assert_vllm_grm_job_api_health(client, base)
 
         r = client.post(f"{base}/jobs", json=payload)
         r.raise_for_status()
