@@ -47,7 +47,7 @@ cd "$REPO_ROOT"
 # 2. 环境变量
 # ======================
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
-export SPEECHJUDGE_MODEL_PATH="${SPEECHJUDGE_MODEL_PATH:-${REPO_ROOT}/infer/pretrained/SpeechJudge-GRM}"
+export SPEECHJUDGE_MODEL_PATH="${SPEECHJUDGE_MODEL_PATH:-/root/models/SpeechJudge-GRM}"
 export SPEECHJUDGE_VLLM_API_DATA="${SPEECHJUDGE_VLLM_API_DATA:-${REPO_ROOT}/data/vllm_grm_jobs}"
 # 不需要 MongoDB：vllm_grm_api 使用本地 JSON 文件存储任务。
 
