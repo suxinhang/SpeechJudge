@@ -1,0 +1,24 @@
+Full ranking (multi-round stable ranking)
+rounds=3, num_of_generation=2, total=21
+
+#01 优秀 avg_rank=1.333 rank_std=0.471 top5_hits=3/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0013_th-TH-Chirp3-HD-Erinome_276_2347c5f8.mp3
+#02 优秀 avg_rank=1.667 rank_std=0.471 top5_hits=3/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0012_th-TH-Chirp3-HD-Enceladus_275_bb952b0b.mp3
+#03 良好 avg_rank=3.000 rank_std=0.000 top5_hits=3/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/11.mp3
+#04 良好 avg_rank=4.000 rank_std=0.000 top5_hits=3/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0011_th-TH-Chirp3-HD-Despina_274_deade466.mp3
+#05 良好 avg_rank=5.000 rank_std=0.000 top5_hits=3/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0010_th-TH-Chirp3-HD-Charon_273_4fc10eee.mp3
+#06 良好 avg_rank=6.333 rank_std=0.471 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0008_th-TH-Chirp3-HD-Autonoe_271_16e22ad7.mp3
+#07 良好 avg_rank=6.667 rank_std=0.471 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0009_th-TH-Chirp3-HD-Callirrhoe_272_f79665f9.mp3
+#08 待提升 avg_rank=8.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/7.mp3
+#09 待提升 avg_rank=9.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0007_th-TH-Chirp3-HD-Aoede_270_0e8824f7.mp3
+#10 待提升 avg_rank=10.333 rank_std=0.471 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/6.mp3
+#11 待提升 avg_rank=11.667 rank_std=0.471 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0006_th-TH-Chirp3-HD-Alnilam_269_f3634cc4.mp3
+#12 待提升 avg_rank=11.667 rank_std=1.700 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/5.mp3
+#13 待提升 avg_rank=13.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0005_th-TH-Chirp3-HD-Algieba_268_0b5d024c.mp3
+#14 待提升 avg_rank=13.333 rank_std=0.943 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/4.mp3
+#15 待提升 avg_rank=15.333 rank_std=0.471 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0004_th-TH-Chirp3-HD-Algenib_267_2f902f2f.mp3
+#16 待提升 avg_rank=15.667 rank_std=0.471 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/3.mp3
+#17 待提升 avg_rank=17.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0003_th-TH-Chirp3-HD-Achird_266_fcf973ab.mp3
+#18 待提升 avg_rank=18.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0002_th-TH-Chirp3-HD-Achernar_265_0c96998b.mp3
+#19 待提升 avg_rank=19.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/1.mp3
+#20 待提升 avg_rank=20.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0001_th-TH-AcharaNeural_257_5f91444b.mp3
+#21 待提升 avg_rank=21.000 rank_std=0.000 top5_hits=0/3 url=https://overseas-resource-storage.s3.amazonaws.com/test2026/0000_th-TH-NiwatNeural_256_2e146a5d.mp3

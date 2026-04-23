@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-DEFAULT_BASE = "http://127.0.0.1:8001"
+DEFAULT_BASE = "https://glasgow-mode-danny-howard.trycloudflare.com/"
 DEFAULT_TARGET = "smoke triplet screen"
 
 

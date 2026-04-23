@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 
 # 与 scripts/start_vllm_grm_api_local.sh 中 API_PORT 默认一致
-DEFAULT_BASE = "http://127.0.0.1:8001"
+DEFAULT_BASE = "https://glasgow-mode-danny-howard.trycloudflare.com/"
 DEFAULT_TARGET = "smoke triplet screen"
 
 # 其它 SpeechJudge 网关的 /health 常带这些字段；vllm_grm_api 只有 {"status": "ok"}。
