@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPLOY_MONGO_SH="${SCRIPT_DIR}/deploy_mongodb.sh"
-
 # ======================
 # 1. conda 环境
 # ======================
@@ -18,6 +15,12 @@ cd /root/SpeechJudge/infer
 # ======================
 export SPEECHJUDGE_MODEL_PATH="/root/models/SpeechJudge-GRM"
 export SPEECHJUDGE_CUDA_DEVICE="0"
+# Default when POST /jobs/rank omits form fields pairwise_parallel / prepare_parallel.
+# pairwise_parallel = max pairs per batched GPU forward during odd-even sort (not threads).
+# export SPEECHJUDGE_PAIRWISE_PARALLEL=3
+# export SPEECHJUDGE_PREPARE_PARALLEL=8
+# export SPEECHJUDGE_PREPARE_DOWNLOAD_ATTEMPTS=5
+# export SPEECHJUDGE_PREPARE_DECODE_ATTEMPTS=3
 
 # ======================
 # 3. 日志目录
@@ -29,62 +32,7 @@ LOG_FILE="$LOG_DIR/server_$(date +%Y%m%d_%H%M%S).log"
 
 echo "[INFO] starting SpeechJudge..." | tee -a "$LOG_FILE"
 
-# ======================
-# 3b. 本地 MongoDB（Docker，可选）
-# ======================
-# 与 infer/rank_jobs_app/core/config.py 默认一致：mongodb://127.0.0.1:27017
-# 显式关闭：SPEECHJUDGE_START_LOCAL_MONGO=0|false|no|off
-# 端口已可连：视为已有 Mongo（本机服务或其它方式），不再起 Docker 容器。
-# 逻辑委托 scripts/deploy_mongodb.sh（容器已存在 / 已运行时会跳过或 docker start）。
-
-_mongo_port="${MONGO_PORT:-27017}"
-_skip_local_mongo() {
-  local v
-  v="$(echo "${SPEECHJUDGE_START_LOCAL_MONGO:-1}" | tr '[:upper:]' '[:lower:]')"
-  [[ "$v" == "0" || "$v" == "false" || "$v" == "no" || "$v" == "off" ]]
-}
-
-_mongo_port_open() {
-  bash -c "echo >/dev/tcp/127.0.0.1/${_mongo_port}" 2>/dev/null
-}
-
-_wait_mongo_port() {
-  local i
-  for i in $(seq 1 30); do
-    if _mongo_port_open; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-if _skip_local_mongo; then
-  echo "[INFO] skip local MongoDB (SPEECHJUDGE_START_LOCAL_MONGO=${SPEECHJUDGE_START_LOCAL_MONGO:-})" | tee -a "$LOG_FILE"
-elif _mongo_port_open; then
-  echo "[INFO] MongoDB port ${_mongo_port} already accepting connections, skip Docker MongoDB." | tee -a "$LOG_FILE"
-elif command -v docker >/dev/null 2>&1 && [[ -f "$DEPLOY_MONGO_SH" ]]; then
-  echo "[INFO] ensuring local MongoDB (Docker)..." | tee -a "$LOG_FILE"
-  set +e
-  bash "$DEPLOY_MONGO_SH" up 2>&1 | tee -a "$LOG_FILE"
-  _mongo_up_rc="${PIPESTATUS[0]}"
-  set -e
-  if [[ "${_mongo_up_rc}" -ne 0 ]]; then
-    echo "[WARN] deploy_mongodb.sh exited ${_mongo_up_rc}; check Docker / port binding." | tee -a "$LOG_FILE"
-  fi
-  if _wait_mongo_port; then
-    echo "[INFO] MongoDB port ${_mongo_port} is ready." | tee -a "$LOG_FILE"
-  else
-    echo "[WARN] MongoDB port ${_mongo_port} not ready after 30s; continuing anyway." | tee -a "$LOG_FILE"
-  fi
-else
-  echo "[WARN] docker not found or missing ${DEPLOY_MONGO_SH}; not starting local MongoDB." | tee -a "$LOG_FILE"
-fi
-
-export SPEECHJUDGE_MONGO_URI="${SPEECHJUDGE_MONGO_URI:-mongodb://127.0.0.1:${_mongo_port}}"
-export SPEECHJUDGE_MONGO_DB="${SPEECHJUDGE_MONGO_DB:-speechjudge}"
-export SPEECHJUDGE_MONGO_COLLECTION="${SPEECHJUDGE_MONGO_COLLECTION:-rank_jobs}"
-echo "[INFO] SPEECHJUDGE_MONGO_URI=${SPEECHJUDGE_MONGO_URI}" | tee -a "$LOG_FILE"
+# rank_jobs_app 使用本地 JSON 文件存任务（见 SPEECHJUDGE_RANK_JOBS_JSON_DIR），无需 Mongo。
 
 # ======================
 # 4. 先停止旧服务（关键）
@@ -104,17 +52,6 @@ pkill -f "rank_jobs_app.app.main:app" || true
 pkill -f "cloudflared tunnel" || true
 
 sleep 2
-
-# ======================
-# 4b. rank_jobs / Motor：bson 随 pymongo 安装（避免未 pip 完整依赖即启动）
-# ======================
-if ! python -c "from bson import ObjectId" 2>/dev/null; then
-  echo "[INFO] pymongo not available (no bson); pip install pymongo motor ..." | tee -a "$LOG_FILE"
-  pip install -q pymongo motor >>"$LOG_FILE" 2>&1 || {
-    echo "[ERROR] pip install pymongo motor failed; install manually then retry." | tee -a "$LOG_FILE"
-    exit 1
-  }
-fi
 
 # ======================
 # 5. 启动服务（后台）
@@ -147,30 +84,123 @@ done
 # ======================
 echo "[INFO] starting cloudflared..." | tee -a "$LOG_FILE"
 
-cloudflared tunnel --url http://127.0.0.1:8000 \
-  > "$LOG_DIR/cloudflared.log" 2>&1 &
+# 优先使用可写目录中的 cloudflared（例如 /root/bin/cloudflared），
+# 回退到 PATH。也可通过环境变量 CLOUDFLARED_BIN 显式指定。
+if [[ -z "${CLOUDFLARED_BIN:-}" ]]; then
+  if [[ -x "/root/bin/cloudflared" ]]; then
+    CLOUDFLARED_BIN="/root/bin/cloudflared"
+  else
+    CLOUDFLARED_BIN="$(command -v cloudflared || true)"
+  fi
+fi
+
+# 已解析到文件但无执行位（镜像里常见 644）：自动 chmod 一次再继续
+if [[ -n "${CLOUDFLARED_BIN:-}" ]] && [[ -f "$CLOUDFLARED_BIN" ]] && [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+  if chmod +x "$CLOUDFLARED_BIN" 2>/dev/null && [[ -x "$CLOUDFLARED_BIN" ]]; then
+    echo "[INFO] chmod +x cloudflared: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+  fi
+fi
+
+# 未找到或未可执行：Linux 下尝试从 GitHub 下载官方二进制到 /root/bin（需 curl 或 wget）。
+# 离线或不想自动下载时: export SKIP_CLOUDFLARED_DOWNLOAD=1
+if [[ -z "$CLOUDFLARED_BIN" ]] || [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+  if [[ -n "$CLOUDFLARED_BIN" ]] && [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+    echo "[WARN] cloudflared still not executable after chmod attempt: $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+  fi
+  if [[ "${SKIP_CLOUDFLARED_DOWNLOAD:-}" != "1" ]] && [[ "$(uname -s)" == "Linux" ]]; then
+    _cf_arch=""
+    case "$(uname -m)" in
+      x86_64) _cf_arch=amd64 ;;
+      aarch64|arm64) _cf_arch=arm64 ;;
+    esac
+    if [[ -n "$_cf_arch" ]] && { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; }; then
+      echo "[INFO] cloudflared missing; downloading cloudflared-linux-${_cf_arch} -> /root/bin/cloudflared ..." | tee -a "$LOG_FILE"
+      mkdir -p /root/bin
+      _cf_tmp="/root/bin/cloudflared.tmp.$$"
+      _cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${_cf_arch}"
+      _cf_dl=1
+      set +e
+      for _try in 1 2 3; do
+        rm -f "$_cf_tmp"
+        if command -v curl >/dev/null 2>&1; then
+          curl -fsSL "$_cf_url" -o "$_cf_tmp" 2>/dev/null && [[ -s "$_cf_tmp" ]] && _cf_dl=0 && break
+        fi
+        if command -v wget >/dev/null 2>&1; then
+          wget -q "$_cf_url" -O "$_cf_tmp" 2>/dev/null && [[ -s "$_cf_tmp" ]] && _cf_dl=0 && break
+        fi
+        [[ "$_try" -lt 3 ]] && sleep 4
+      done
+      set -e
+      if [[ "$_cf_dl" -eq 0 ]] && [[ -s "$_cf_tmp" ]]; then
+        chmod +x "$_cf_tmp"
+        mv -f "$_cf_tmp" /root/bin/cloudflared
+        CLOUDFLARED_BIN="/root/bin/cloudflared"
+        echo "[SUCCESS] installed cloudflared at $CLOUDFLARED_BIN" | tee -a "$LOG_FILE"
+      else
+        rm -f "$_cf_tmp"
+        echo "[WARN] cloudflared auto-download failed after retries (TLS/proxy/GitHub?)." | tee -a "$LOG_FILE"
+        echo "[HINT] Fix /usr/local/bin/cloudflared permissions, or copy binary in via scp; see docs URL below." | tee -a "$LOG_FILE"
+      fi
+    elif [[ -z "$_cf_arch" ]]; then
+      echo "[WARN] unsupported machine for auto-download: $(uname -m); install cloudflared manually." | tee -a "$LOG_FILE"
+    else
+      echo "[WARN] need curl or wget to auto-download cloudflared." | tee -a "$LOG_FILE"
+    fi
+  elif [[ "${SKIP_CLOUDFLARED_DOWNLOAD:-}" == "1" ]]; then
+    echo "[INFO] SKIP_CLOUDFLARED_DOWNLOAD=1; not attempting cloudflared download." | tee -a "$LOG_FILE"
+  fi
+fi
+
+START_TUNNEL=1
+if [[ -z "$CLOUDFLARED_BIN" ]]; then
+  echo "[WARN] cloudflared not available; skip public tunnel." | tee -a "$LOG_FILE"
+  echo "[HINT] Linux x86_64 manual install:" | tee -a "$LOG_FILE"
+  echo "  mkdir -p /root/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /root/bin/cloudflared && chmod +x /root/bin/cloudflared" | tee -a "$LOG_FILE"
+  echo "[HINT] Docs: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/" | tee -a "$LOG_FILE"
+  START_TUNNEL=0
+elif [[ ! -x "$CLOUDFLARED_BIN" ]]; then
+  echo "[WARN] cloudflared is not executable: $CLOUDFLARED_BIN — skip tunnel." | tee -a "$LOG_FILE"
+  START_TUNNEL=0
+fi
+
+if [[ "$START_TUNNEL" -eq 1 ]]; then
+  set +e
+  "$CLOUDFLARED_BIN" tunnel --url http://127.0.0.1:8000 \
+    > "$LOG_DIR/cloudflared.log" 2>&1 &
+  CF_PID=$!
+  sleep 2
+  if ! kill -0 "$CF_PID" 2>/dev/null; then
+    echo "[WARN] cloudflared exited immediately; check $LOG_DIR/cloudflared.log" | tee -a "$LOG_FILE"
+    START_TUNNEL=0
+  fi
+  set -e
+fi
 
 # ======================
 # 8. 提取公网地址（quick tunnel 日志出现较慢，最多轮询约 2 分钟）
 # ======================
 PUBLIC_URL=""
-for _cf in $(seq 1 60); do
-  if [[ -f "$LOG_DIR/cloudflared.log" ]]; then
-    PUBLIC_URL=$(
-      grep -oE 'https://[^[:space:]]+trycloudflare\.com' "$LOG_DIR/cloudflared.log" 2>/dev/null | head -n 1 || true
-    )
-  fi
-  if [[ -n "$PUBLIC_URL" ]]; then
-    break
-  fi
-  sleep 2
-done
+if [[ "$START_TUNNEL" -eq 1 ]]; then
+  for _cf in $(seq 1 60); do
+    if [[ -f "$LOG_DIR/cloudflared.log" ]]; then
+      PUBLIC_URL=$(
+        grep -oE 'https://[^[:space:]]+trycloudflare\.com' "$LOG_DIR/cloudflared.log" 2>/dev/null | head -n 1 || true
+      )
+    fi
+    if [[ -n "$PUBLIC_URL" ]]; then
+      break
+    fi
+    sleep 2
+  done
+fi
 
-if [ -n "$PUBLIC_URL" ]; then
+if [[ "$START_TUNNEL" -eq 0 ]]; then
+    echo "[INFO] skip tunnel URL detection because cloudflared is unavailable." | tee -a "$LOG_FILE"
+elif [ -n "$PUBLIC_URL" ]; then
     echo "[SUCCESS] Public URL: $PUBLIC_URL" | tee -a "$LOG_FILE"
 else
     echo "[WARN] cannot detect tunnel URL within ~120s; see: $LOG_DIR/cloudflared.log" | tee -a "$LOG_FILE"
-fi
+  fi
 
 # ======================
 # 9. 保持进程
