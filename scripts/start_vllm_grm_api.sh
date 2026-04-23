@@ -118,14 +118,30 @@ echo "[INFO] server pid: $SERVER_PID" | tee -a "$LOG_FILE"
 # ======================
 # 6. 等待服务 ready
 # ======================
-echo "[INFO] waiting for /health on port ${API_PORT} ..." | tee -a "$LOG_FILE"
-for _i in $(seq 1 120); do
+HEALTH_POLL_INTERVAL="${SPEECHJUDGE_HEALTH_POLL_INTERVAL:-5}"
+HEALTH_MAX_TRIES="${SPEECHJUDGE_HEALTH_MAX_TRIES:-120}"
+API_READY=0
+
+echo "[INFO] waiting for /health on port ${API_PORT} (every ${HEALTH_POLL_INTERVAL}s, max ${HEALTH_MAX_TRIES} tries) ..." | tee -a "$LOG_FILE"
+for _i in $(seq 1 "$HEALTH_MAX_TRIES"); do
   if curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null; then
     echo "[SUCCESS] API is ready (model load may still be finishing on first request)." | tee -a "$LOG_FILE"
+    API_READY=1
     break
   fi
-  sleep 2
+
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "[ERROR] uvicorn process exited before /health became ready; see $LOG_FILE" | tee -a "$LOG_FILE"
+    exit 1
+  fi
+
+  echo "[INFO] health check ${_i}/${HEALTH_MAX_TRIES}: not ready yet, retry in ${HEALTH_POLL_INTERVAL}s ..." | tee -a "$LOG_FILE"
+  sleep "$HEALTH_POLL_INTERVAL"
 done
+
+if [[ "$API_READY" -ne 1 ]]; then
+  echo "[WARN] /health did not become ready after $((HEALTH_POLL_INTERVAL * HEALTH_MAX_TRIES))s; continuing startup flow." | tee -a "$LOG_FILE"
+fi
 
 # ======================
 # 7. 启动 Cloudflare Tunnel
