@@ -24,8 +24,21 @@ echo "[INFO] repo: $REPO_ROOT" | tee -a "$LOG_FILE"
 echo "[INFO] SPEECHJUDGE_MODEL_PATH=$SPEECHJUDGE_MODEL_PATH" | tee -a "$LOG_FILE"
 echo "[INFO] SPEECHJUDGE_VLLM_API_DATA=$SPEECHJUDGE_VLLM_API_DATA" | tee -a "$LOG_FILE"
 
-echo "[INFO] stopping old uvicorn (vllm_grm_api) if any..." | tee -a "$LOG_FILE"
+# ======================
+# 先停止旧进程再启动（与 scripts/start.sh 对齐，避免占 GPU / 占 8000）
+# ======================
+echo "[INFO] stopping SGLang if running (free GPU)..." | tee -a "$LOG_FILE"
+pkill -f "sglang.launch_server" || true
+pkill -f "sglang\.router" || true
+
+echo "[INFO] stopping uvicorn on rank_jobs_app / vllm_grm_api..." | tee -a "$LOG_FILE"
+pkill -f "uvicorn rank_jobs_app.app.main:app" || true
+pkill -f "rank_jobs_app.app.main:app" || true
 pkill -f "uvicorn vllm_grm_api.app.main:app" || true
+
+echo "[INFO] stopping old cloudflared quick tunnel (will start a fresh one)..." | tee -a "$LOG_FILE"
+pkill -f "cloudflared tunnel" || true
+
 sleep 2
 
 echo "[INFO] starting SpeechJudge vLLM GRM API..." | tee -a "$LOG_FILE"
