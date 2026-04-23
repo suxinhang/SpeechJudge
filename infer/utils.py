@@ -1,3 +1,47 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+DEFAULT_GRM_MODEL_PATH = "pretrained/SpeechJudge-GRM"
+SPEECHJUDGE_CONFIG_FILENAME = "speechjudge_config.json"
+
+
+def load_grm_model_path() -> str:
+    """Directory of local SpeechJudge-GRM weights.
+
+    Resolution order:
+
+    1. Non-empty environment variable ``SPEECHJUDGE_MODEL_PATH``.
+    2. JSON field ``model_path`` in the config file. Default file is
+       ``infer/speechjudge_config.json`` (next to this module). Set
+       ``SPEECHJUDGE_CONFIG`` to another path to override the file location.
+    3. ``DEFAULT_GRM_MODEL_PATH``.
+    """
+
+    env = os.environ.get("SPEECHJUDGE_MODEL_PATH", "").strip()
+    if env:
+        return env
+
+    cfg_raw = os.environ.get("SPEECHJUDGE_CONFIG")
+    if cfg_raw:
+        cfg_path = Path(os.path.expandvars(os.path.expanduser(cfg_raw)))
+    else:
+        cfg_path = Path(__file__).resolve().parent / SPEECHJUDGE_CONFIG_FILENAME
+
+    if cfg_path.is_file():
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return DEFAULT_GRM_MODEL_PATH
+        mp = (data.get("model_path") or "").strip()
+        if mp:
+            return mp
+
+    return DEFAULT_GRM_MODEL_PATH
+
+
 def download_hugginface_model(repo_id, local_dir):
     from huggingface_hub import snapshot_download
 
@@ -9,6 +53,12 @@ def download_hugginface_model(repo_id, local_dir):
         resume_download=True,
         local_dir_use_symlinks=False,
     )
+
+
+def download_speechjudge_grm(local_dir: str) -> None:
+    """Download ``RMSnow/SpeechJudge-GRM`` into ``local_dir`` (vLLM entry point)."""
+
+    download_hugginface_model("RMSnow/SpeechJudge-GRM", local_dir)
 
 
 def build_qwen_omni_inputs(processor, conversations):

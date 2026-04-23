@@ -8,6 +8,7 @@ from utils import (
     build_cot_conversation,
     download_speechjudge_grm,
     extract_rating,
+    load_grm_model_path,
 )
 
 
@@ -78,7 +79,7 @@ def compare_wavs(
 
 
 if __name__ == "__main__":
-    model_path = "pretrained/SpeechJudge-GRM"
+    model_path = load_grm_model_path()
     processor, model, vllm_sampling_params = load_model(model_path)
 
     target_text = "The worn leather, once supple and inviting, now hangs limp and lifeless. Its time has passed, like autumn leaves surrendering to winter's chill. I shall cast it aside, making way for new beginnings and fresh possibilities."
