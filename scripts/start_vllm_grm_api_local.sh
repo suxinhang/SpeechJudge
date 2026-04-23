@@ -12,8 +12,9 @@ export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export SPEECHJUDGE_MODEL_PATH="${SPEECHJUDGE_MODEL_PATH:-${REPO_ROOT}/infer/pretrained}"
 export SPEECHJUDGE_VLLM_API_DATA="${SPEECHJUDGE_VLLM_API_DATA:-${REPO_ROOT}/data/vllm_grm_jobs}"
 
-HOST="${SPEECHJUDGE_API_HOST:-127.0.0.1}"
-PORT="${SPEECHJUDGE_API_PORT:-8000}"
+# --------- 监听地址与端口（改端口只改下面两行；test_vllm_grm_api.py --base-url 需与此一致）---------
+API_HOST=127.0.0.1
+API_PORT=8001
 
 LOG_DIR="${REPO_ROOT}/logs/vllm_grm_api"
 mkdir -p "$LOG_DIR"
@@ -42,7 +43,7 @@ stop_cmdline_substr() {
 echo "[INFO] repo: $REPO_ROOT" | tee -a "$LOG_FILE"
 echo "[INFO] SPEECHJUDGE_MODEL_PATH=$SPEECHJUDGE_MODEL_PATH" | tee -a "$LOG_FILE"
 echo "[INFO] SPEECHJUDGE_VLLM_API_DATA=$SPEECHJUDGE_VLLM_API_DATA" | tee -a "$LOG_FILE"
-echo "[INFO] bind ${HOST}:${PORT}" | tee -a "$LOG_FILE"
+echo "[INFO] bind ${API_HOST}:${API_PORT}" | tee -a "$LOG_FILE"
 
 echo "[INFO] stopping SGLang if running (free GPU)..." | tee -a "$LOG_FILE"
 stop_cmdline_substr "sglang.launch_server"
@@ -60,8 +61,8 @@ sleep 2
 
 echo "[INFO] starting SpeechJudge vLLM GRM API..." | tee -a "$LOG_FILE"
 nohup python -m uvicorn vllm_grm_api.app.main:app \
-  --host "$HOST" \
-  --port "$PORT" \
+  --host "$API_HOST" \
+  --port "$API_PORT" \
   --log-level info \
   >>"$LOG_FILE" 2>&1 &
 
@@ -76,23 +77,23 @@ echo "[INFO] server pid: $SERVER_PID" | tee -a "$LOG_FILE"
 
 echo "[INFO] waiting for /health ..." | tee -a "$LOG_FILE"
 for _i in $(seq 1 120); do
-  if curl -sf "http://${HOST}:${PORT}/health" >/dev/null; then
+  if curl -sf "http://${API_HOST}:${API_PORT}/health" >/dev/null; then
     echo "[SUCCESS] API is ready." | tee -a "$LOG_FILE"
     break
   fi
   sleep 2
 done
 
-if curl -sf "http://${HOST}:${PORT}/health" >/dev/null; then
+if curl -sf "http://${API_HOST}:${API_PORT}/health" >/dev/null; then
   echo "[INFO] uvicorn keeps running (PID $SERVER_PID). Log: $LOG_FILE" | tee -a "$LOG_FILE"
-  echo "[INFO] Verify: curl -sf http://${HOST}:${PORT}/health" | tee -a "$LOG_FILE"
+  echo "[INFO] Verify: curl -sf http://${API_HOST}:${API_PORT}/health" | tee -a "$LOG_FILE"
 else
   echo "[WARN] /health still not OK after wait loop; check $LOG_FILE" | tee -a "$LOG_FILE"
 fi
 
 if command -v cloudflared >/dev/null 2>&1; then
   echo "[INFO] starting cloudflared quick tunnel..." | tee -a "$LOG_FILE"
-  cloudflared tunnel --url "http://${HOST}:${PORT}" \
+  cloudflared tunnel --url "http://${API_HOST}:${API_PORT}" \
     >"$LOG_DIR/cloudflared.log" 2>&1 &
 
   PUBLIC_URL=""
